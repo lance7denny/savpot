@@ -36,7 +36,7 @@ import SavPotApp from "./SavPotApp";
 
 function AppShell() {
   const { user, loading, config } = useAuth();
-
+  console.log("app shell initiated")
   if (loading) {
     return (
       <div
