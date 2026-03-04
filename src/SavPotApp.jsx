@@ -1,4 +1,15 @@
 import { useState, useEffect } from "react";
+import { useAuth } from "./hooks/useAuth";
+import { signUp, signIn, signInWithGoogle, logOut, changePassword } from "./firebase/auth";
+import {
+  saveSetupConfig, updateUserProfile,
+  getAccounts, addAccount, updateAccount, deleteAccount,
+  addExpense, getExpensesByMonth,
+  getSavPotState, updateSavPotState, addSavPotEntry, getSavPotByMonth,
+  getDailySnapshots,
+  getCategories, saveCategories, getVendors, saveVendors,
+  getLiabilities, addLiability, deleteLiability,
+} from "./firebase/database";
 
 // ─── DESIGN TOKENS ───
 const F = "'Poppins', sans-serif";
@@ -77,6 +88,7 @@ const CSS = () => (
     @keyframes fadeUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
     @keyframes slideR{from{opacity:0;transform:translateX(24px)}to{opacity:1;transform:translateX(0)}}
     @keyframes pop{from{opacity:0;transform:scale(0.92)}to{opacity:1;transform:scale(1)}}
+    @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
     input[type=number]::-webkit-inner-spin-button,
     input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
     input[type=number]{-moz-appearance:textfield;appearance:textfield}
@@ -90,6 +102,14 @@ const Ic = ({ n, s = 24, c, f, st }) => (
   <span className={`mi${f ? " mi-f" : ""}`} style={{ fontSize: s, color: c || C.tx, ...(st || {}) }}>
     {n}
   </span>
+);
+
+const Skeleton = ({ h = 60, mb = 8, r = 16 }) => (
+  <div style={{
+    height: h, borderRadius: r, marginBottom: mb,
+    background: "linear-gradient(90deg,rgba(0,0,0,0.04) 25%,rgba(0,0,0,0.07) 50%,rgba(0,0,0,0.04) 75%)",
+    backgroundSize: "200% 100%", animation: "shimmer 1.5s infinite",
+  }} />
 );
 
 const Blob = ({ t, l, sz = 320, c = "rgba(27,140,90,0.06)" }) => (
@@ -504,13 +524,62 @@ const SplashScreen = ({ onDone }) => {
 // ═══════════════════════════════════
 // ─── SIGNUP SCREEN ───
 // ═══════════════════════════════════
+const mapFirebaseError = (code) => ({
+  "auth/email-already-in-use": "An account with this email already exists. Try logging in.",
+  "auth/wrong-password": "Incorrect password. Please try again.",
+  "auth/user-not-found": "No account found with this email. Try signing up.",
+  "auth/invalid-credential": "Invalid email or password. Please try again.",
+  "auth/invalid-email": "Please enter a valid email address.",
+  "auth/too-many-requests": "Too many attempts. Please try again later.",
+  "auth/network-request-failed": "Network error. Check your connection.",
+  "auth/popup-closed-by-user": null, // silent — user closed the Google popup
+}[code] ?? "Something went wrong. Please try again.");
+
 const SignupScreen = ({ onDone }) => {
+  const [mode, setMode] = useState("signup"); // "signup" | "login"
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [pass, setPass] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
+  const [error, setError] = useState("");
 
-  const valid = name.trim().length > 0 && email.includes("@") && pass.length >= 6;
+  const isSignup = mode === "signup";
+  const valid = isSignup
+    ? name.trim().length > 0 && email.includes("@") && pass.length >= 6
+    : email.includes("@") && pass.length >= 6;
+
+  const handleSubmit = async () => {
+    if (authLoading || !valid) return;
+    setError("");
+    setAuthLoading(true);
+    try {
+      if (isSignup) await signUp(email, pass, name, phone);
+      else await signIn(email, pass);
+      onDone(); // no-op; useEffect in SavPotApp handles routing
+    } catch (err) {
+      const msg = mapFirebaseError(err.code);
+      if (msg) setError(msg);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleGoogle = async () => {
+    setError("");
+    setAuthLoading(true);
+    try {
+      await signInWithGoogle();
+      onDone();
+    } catch (err) {
+      const msg = mapFirebaseError(err.code);
+      if (msg) setError(msg);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const toggleMode = () => { setMode(isSignup ? "login" : "signup"); setError(""); };
 
   return (
     <div
@@ -541,15 +610,17 @@ const SignupScreen = ({ onDone }) => {
             <Ic n="savings" s={32} c="#fff" f />
           </div>
           <h1 style={{ fontFamily: F, fontSize: 26, color: C.tx, fontWeight: 700 }}>
-            Create Account
+            {isSignup ? "Create Account" : "Welcome Back"}
           </h1>
           <p style={{ fontFamily: F, fontSize: 13, color: C.t3, marginTop: 4 }}>
-            Start your financial discipline journey
+            {isSignup ? "Start your financial discipline journey" : "Sign in to continue to SavPot"}
           </p>
         </div>
 
         <Glass grad style={{ padding: 24 }}>
-          <Inp label="Full Name" value={name} onChange={setName} placeholder="Den" autoFocus />
+          {isSignup && (
+            <Inp label="Full Name" value={name} onChange={setName} placeholder="Den" autoFocus />
+          )}
           <Inp
             label="Email Address"
             value={email}
@@ -557,13 +628,15 @@ const SignupScreen = ({ onDone }) => {
             placeholder="you@email.com"
             type="email"
           />
-          <Inp
-            label="Phone Number"
-            value={phone}
-            onChange={setPhone}
-            placeholder="+91 98765 43210"
-            type="tel"
-          />
+          {isSignup && (
+            <Inp
+              label="Phone Number"
+              value={phone}
+              onChange={setPhone}
+              placeholder="+91 98765 43210"
+              type="tel"
+            />
+          )}
           <Inp
             label="Password"
             value={pass}
@@ -572,15 +645,28 @@ const SignupScreen = ({ onDone }) => {
             type="password"
           />
 
-          <Btn onClick={onDone} disabled={!valid} style={{ marginTop: 4 }}>
-            Create Account
+          {/* Inline error display */}
+          {error && (
+            <div style={{
+              padding: "10px 14px", borderRadius: 12,
+              background: `${C.red}10`, border: `1px solid ${C.red}20`,
+              marginBottom: 12, display: "flex", gap: 8, alignItems: "flex-start",
+            }}>
+              <Ic n="warning" s={16} c={C.red} st={{ flexShrink: 0, marginTop: 1 }} />
+              <span style={{ fontFamily: F, fontSize: 12, color: C.red, lineHeight: 1.4 }}>{error}</span>
+            </div>
+          )}
+
+          <Btn onClick={handleSubmit} disabled={!valid || authLoading} style={{ marginTop: 4 }}>
+            {authLoading ? "Please wait…" : isSignup ? "Create Account" : "Log In"}
           </Btn>
 
           <Divider />
 
           <Btn
             sec
-            onClick={onDone}
+            onClick={handleGoogle}
+            disabled={authLoading}
             style={{
               display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
             }}
@@ -596,8 +682,13 @@ const SignupScreen = ({ onDone }) => {
         </Glass>
 
         <p style={{ fontFamily: F, fontSize: 11, color: C.t3, textAlign: "center", marginTop: 16 }}>
-          Already have an account?{" "}
-          <span style={{ color: C.g1, fontWeight: 600, cursor: "pointer" }}>Log In</span>
+          {isSignup ? "Already have an account?" : "New here?"}{" "}
+          <span
+            onClick={toggleMode}
+            style={{ color: C.g1, fontWeight: 600, cursor: "pointer" }}
+          >
+            {isSignup ? "Log In" : "Sign Up"}
+          </span>
         </p>
       </div>
     </div>
@@ -609,6 +700,7 @@ const SignupScreen = ({ onDone }) => {
 // ═══════════════════════════════════
 const SetupWizard = ({ onDone }) => {
   const [pg, setPg] = useState(0);
+  const [saving, setSaving] = useState(false);
 
   // Page 1 - Income
   const [incItems, setIncItems] = useState([
@@ -923,29 +1015,34 @@ const SetupWizard = ({ onDone }) => {
             </Btn>
           )}
           <Btn
-            onClick={() => {
+            onClick={async () => {
               if (pg < 3) {
                 setPg(pg + 1);
               } else {
-                onDone({
-                  income: incomeSum,
-                  incomeItems: incItems.filter((x) => Number(x.amount) > 0),
-                  mandatory: expenseSum,
-                  expenseItems:
-                    expMode === "total" ? [] : expItems.filter((x) => Number(x.amount) > 0),
-                  investments: investSum,
-                  investItems:
-                    noInvest || invMode === "total"
-                      ? []
-                      : invItems.filter((x) => Number(x.amount) > 0),
-                  daily: effectiveDaily,
-                  savpotDirect: excessToSavpot,
-                });
+                setSaving(true);
+                try {
+                  await onDone({
+                    income: incomeSum,
+                    incomeItems: incItems.filter((x) => Number(x.amount) > 0),
+                    mandatory: expenseSum,
+                    expenseItems:
+                      expMode === "total" ? [] : expItems.filter((x) => Number(x.amount) > 0),
+                    investments: investSum,
+                    investItems:
+                      noInvest || invMode === "total"
+                        ? []
+                        : invItems.filter((x) => Number(x.amount) > 0),
+                    daily: effectiveDaily,
+                    savpotDirect: excessToSavpot,
+                  });
+                } finally {
+                  setSaving(false);
+                }
               }
             }}
-            disabled={!canNext[pg]}
+            disabled={!canNext[pg] || saving}
           >
-            {pg < 3 ? "Continue" : "Start Saving"}
+            {pg < 3 ? "Continue" : saving ? "Saving…" : "Start Saving"}
           </Btn>
         </div>
 
@@ -1172,38 +1269,24 @@ const HomeScreen = ({ config, onNav }) => {
   const [showExpense, setShowExpense] = useState(false);
   const [prefill, setPrefill] = useState(null);
 
-  // Mock transactions
-  const [transactions, setTransactions] = useState(() => {
-    const cats = [
-      { id: "food", label: "Food", icon: "restaurant", color: "#2CC07E" },
-      { id: "groceries", label: "Groceries", icon: "shopping_cart", color: "#1B8C5A" },
-      { id: "fuel", label: "Fuel", icon: "local_gas_station", color: "#C5961B" },
-      { id: "drinks", label: "Drinks", icon: "local_cafe", color: "#E8C84A" },
-      { id: "bills", label: "Bills", icon: "receipt_long", color: "#6F767E" },
-      { id: "home_cat", label: "Home", icon: "home", color: "#3BA1C8" },
-      { id: "debt", label: "Debt", icon: "credit_card", color: "#E53E3E" },
-    ];
-    const vendors = { food: ["Swiggy", "Zomato", "Biryani House", "Tea Stall"], groceries: ["BigBasket", "DMart", "Zepto"], fuel: ["Shell", "HP Petrol"], drinks: ["Starbucks", "CCD", "Chaayos"], bills: ["Jio", "Netflix"], home_cat: ["Amazon", "Flipkart"], debt: ["EMI Payment"] };
-    const txns = [];
-    // Today's transactions
-    const todayCount = 2 + Math.floor(Math.random() * 3);
-    for (let i = 0; i < todayCount; i++) {
-      const cat = cats[Math.floor(Math.random() * cats.length)];
-      const vl = vendors[cat.id] || ["Misc"];
-      const hr = 8 + Math.floor(Math.random() * (now.getHours() - 7 || 1));
-      txns.push({ id: `t-${day}-${i}`, day, hour: hr, minute: Math.floor(Math.random() * 60), amount: Math.round((Math.random() * 400 + 50) / 10) * 10, category: cat.id, catLabel: cat.label, catIcon: cat.icon, catColor: cat.color, vendor: vl[Math.floor(Math.random() * vl.length)], payMethod: ["Cash", "Bank", "Card"][Math.floor(Math.random() * 3)] });
-    }
-    // Previous days
-    for (let d = day - 1; d >= Math.max(1, day - 6); d--) {
-      const n = 1 + Math.floor(Math.random() * 4);
-      for (let i = 0; i < n; i++) {
-        const cat = cats[Math.floor(Math.random() * cats.length)];
-        const vl = vendors[cat.id] || ["Misc"];
-        txns.push({ id: `t-${d}-${i}`, day: d, hour: 8 + Math.floor(Math.random() * 12), minute: Math.floor(Math.random() * 60), amount: Math.round((Math.random() * 400 + 50) / 10) * 10, category: cat.id, catLabel: cat.label, catIcon: cat.icon, catColor: cat.color, vendor: vl[Math.floor(Math.random() * vl.length)], payMethod: ["Cash", "Bank", "Card"][Math.floor(Math.random() * 3)] });
-      }
-    }
-    return txns.sort((a, b) => b.day - a.day || b.hour - a.hour);
-  });
+  // Real transactions from Firestore
+  const { user } = useAuth();
+  const [transactions, setTransactions] = useState([]);
+  const [txLoading, setTxLoading] = useState(true);
+
+  const mapTxn = (t) => {
+    const d = t.dateTime?.toDate ? t.dateTime.toDate() : new Date();
+    return { ...t, day: t.day ?? d.getDate(), hour: t.hour ?? d.getHours(), minute: t.minute ?? d.getMinutes() };
+  };
+
+  useEffect(() => {
+    if (!user) return;
+    setTxLoading(true);
+    getExpensesByMonth(user.uid, now.getFullYear(), now.getMonth())
+      .then(txns => setTransactions(txns.map(mapTxn)))
+      .catch(console.error)
+      .finally(() => setTxLoading(false));
+  }, [user]);
 
   const todayTxns = transactions.filter(t => t.day === day);
   const spentToday = todayTxns.reduce((s, t) => s + t.amount, 0);
@@ -1211,10 +1294,11 @@ const HomeScreen = ({ config, onNav }) => {
   const overspent = Math.max(0, spentToday - dailyBudget);
   const spentPct = dailyBudget > 0 ? Math.min((spentToday / dailyBudget) * 100, 100) : 0;
 
-  const savpotBal = (config?.savpotDirect || 0) + transactions.filter(t => t.day < day).reduce((s, t) => {
-    const dayBud = dailyBudget;
-    return s;
-  }, 0) + Math.round(dailyBudget * 0.3 * Math.max(0, day - 1));
+  const [savpotBal, setSavpotBal] = useState(0);
+  useEffect(() => {
+    if (!user) return;
+    getSavPotState(user.uid).then(s => setSavpotBal(s?.balance ?? 0)).catch(console.error);
+  }, [user]);
 
   // Streak
   const streak = (() => {
@@ -1268,10 +1352,15 @@ const HomeScreen = ({ config, onNav }) => {
   transactions.forEach(t => { catMap[t.catLabel] = { total: (catMap[t.catLabel]?.total || 0) + t.amount, icon: t.catIcon, color: t.catColor }; });
   const topCats = Object.entries(catMap).map(([k, v]) => ({ label: k, ...v })).sort((a, b) => b.total - a.total).slice(0, 3);
 
-  // Add expense handler
-  const addExpense = (exp) => {
-    const newTxn = { id: `t-${day}-${Date.now()}`, day, hour: now.getHours(), minute: now.getMinutes(), ...exp };
-    setTransactions(prev => [newTxn, ...prev]);
+  // Add expense handler — saves to Firestore and optimistically updates UI
+  const handleAddExpense = async (exp) => {
+    try {
+      const ref = await addExpense(user.uid, exp);
+      const newTxn = { id: ref.id, day, hour: now.getHours(), minute: now.getMinutes(), ...exp };
+      setTransactions(prev => [newTxn, ...prev]);
+    } catch (err) {
+      console.error("Failed to save expense:", err);
+    }
     setShowExpense(false);
     setPrefill(null);
   };
@@ -1418,7 +1507,15 @@ const HomeScreen = ({ config, onNav }) => {
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
               <p style={{ fontFamily: F, fontSize: 12, color: C.t2, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" }}>Recent Transactions</p>
             </div>
-            {transactions.slice(0, 10).map((t, idx) => {
+            {txLoading ? (
+              <>{[56,48,56].map((h, i) => <Skeleton key={i} h={h} mb={6} />)}</>
+            ) : transactions.length === 0 ? (
+              <div style={{ padding: "32px 0", textAlign: "center" }}>
+                <Ic n="receipt_long" s={40} c={C.t3} />
+                <p style={{ fontFamily: F, fontSize: 13, color: C.t3, marginTop: 8 }}>No transactions yet. Add your first expense!</p>
+              </div>
+            ) : null}
+            {!txLoading && transactions.slice(0, 10).map((t, idx) => {
               const isToday = t.day === day;
               const time = isToday ? `${t.hour}:${String(t.minute).padStart(2, "0")}` : `Day ${t.day}`;
               return (
@@ -1513,7 +1610,7 @@ const HomeScreen = ({ config, onNav }) => {
       </button>
 
       {/* ── ADD EXPENSE SHEET ── */}
-      {showExpense && <AddExpenseSheet remaining={remaining} overspent={overspent} dailyBudget={dailyBudget} prefill={prefill} onSave={addExpense} onClose={() => { setShowExpense(false); setPrefill(null); }} />}
+      {showExpense && <AddExpenseSheet remaining={remaining} overspent={overspent} dailyBudget={dailyBudget} prefill={prefill} onSave={handleAddExpense} onClose={() => { setShowExpense(false); setPrefill(null); }} />}
     </div>
   );
 };
@@ -1687,12 +1784,38 @@ const ACCT_TYPES = [
 ];
 
 const ProfileScreen = ({ config, onLogout }) => {
+  const { user, profile, refreshProfile } = useAuth();
+
   // Edit mode
   const [editing, setEditing] = useState(false);
   const [avatar, setAvatar] = useState("a1");
-  const [name, setName] = useState("Den");
-  const [email] = useState("den@email.com");
-  const [phone, setPhone] = useState("+91 98765 43210");
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+  const email = profile?.email || user?.email || "";
+
+  // Sync profile data when it loads
+  useEffect(() => {
+    if (profile) {
+      setAvatar(profile.avatar || "a1");
+      setName(profile.name || "");
+      setPhone(profile.phone || "");
+    }
+  }, [profile]);
+
+  // Save profile changes
+  const handleSaveProfile = async () => {
+    try {
+      await updateUserProfile(user.uid, { name, phone, avatar });
+      await refreshProfile();
+      setPwToast("Profile saved!");
+      setTimeout(() => setPwToast(""), 2500);
+    } catch (err) {
+      console.error("Profile save failed:", err);
+      setPwToast("Save failed. Try again.");
+      setTimeout(() => setPwToast(""), 2500);
+    }
+    setEditing(false);
+  };
 
   // Change password
   const [showPwChange, setShowPwChange] = useState(false);
@@ -1701,13 +1824,17 @@ const ProfileScreen = ({ config, onLogout }) => {
   const [confirmPw, setConfirmPw] = useState("");
   const [pwToast, setPwToast] = useState("");
 
-  // Accounts
-  const [accounts, setAccounts] = useState([
-    { id: "1", type: "cash", name: "Cash", bankName: "", amount: "5000" },
-    { id: "2", type: "bank", name: "Savings", bankName: "HDFC", amount: "85000" },
-  ]);
+  // Accounts — loaded from Firestore
+  const [accounts, setAccounts] = useState([]);
+  const [acctLoading, setAcctLoading] = useState(true);
   const [showAddAcct, setShowAddAcct] = useState(false);
   const [newAcct, setNewAcct] = useState({ type: "bank", name: "", bankName: "", amount: "" });
+
+  useEffect(() => {
+    if (!user) return;
+    setAcctLoading(true);
+    getAccounts(user.uid).then(setAccounts).catch(console.error).finally(() => setAcctLoading(false));
+  }, [user]);
 
   // Additional Income
   const [showAddIncome, setShowAddIncome] = useState(false);
@@ -1715,17 +1842,18 @@ const ProfileScreen = ({ config, onLogout }) => {
   const [addIncAcct, setAddIncAcct] = useState("cash");
   const [addIncTarget, setAddIncTarget] = useState("daily");
 
-  // Income Categories
-  const [incomeCats, setIncomeCats] = useState([
+  // Income Categories — loaded from Firestore, with defaults
+  const defaultIncomeCats = [
     { id: "salary", label: "Salary", icon: "work" },
     { id: "cash_inc", label: "Cash", icon: "payments" },
     { id: "freelance", label: "Freelance", icon: "laptop" },
     { id: "business", label: "Business", icon: "storefront" },
     { id: "rental", label: "Rental", icon: "apartment" },
-  ]);
+  ];
+  const [incomeCats, setIncomeCats] = useState(defaultIncomeCats);
 
-  // Expense Categories
-  const [expCats, setExpCats] = useState([
+  // Expense Categories — loaded from Firestore, with defaults
+  const defaultExpCats = [
     { id: "food", label: "Food", icon: "restaurant" },
     { id: "groceries", label: "Groceries", icon: "shopping_cart" },
     { id: "fuel", label: "Fuel", icon: "local_gas_station" },
@@ -1734,38 +1862,101 @@ const ProfileScreen = ({ config, onLogout }) => {
     { id: "home_exp", label: "Home", icon: "home" },
     { id: "debt", label: "Debt", icon: "credit_card" },
     { id: "other", label: "Other", icon: "more_horiz" },
-  ]);
+  ];
+  const [expCats, setExpCats] = useState(defaultExpCats);
 
-  // Vendors
-  const [vendors, setVendors] = useState([
+  // Vendors — loaded from Firestore, with defaults
+  const defaultVendors = [
     { id: "v1", label: "Swiggy", icon: "restaurant" },
     { id: "v2", label: "Zomato", icon: "restaurant" },
     { id: "v3", label: "Amazon", icon: "shopping_cart" },
     { id: "v4", label: "Shell Petrol", icon: "local_gas_station" },
     { id: "v5", label: "Starbucks", icon: "local_cafe" },
-  ]);
+  ];
+  const [vendors, setVendors] = useState(defaultVendors);
 
   // Liabilities
   const [liabilities, setLiabilities] = useState([]);
   const [showAddLiab, setShowAddLiab] = useState(false);
   const [newLiab, setNewLiab] = useState({ type: "bank", name: "", lender: "", outstanding: "", emi: "", inFixed: true });
 
+  useEffect(() => {
+    if (!user) return;
+    Promise.all([
+      getCategories(user.uid, "income"),
+      getCategories(user.uid, "expense"),
+      getVendors(user.uid),
+      getLiabilities(user.uid),
+    ]).then(([inc, exp, vend, liab]) => {
+      if (inc && inc.length > 0) setIncomeCats(inc);
+      if (exp && exp.length > 0) setExpCats(exp);
+      if (vend && vend.length > 0) setVendors(vend);
+      setLiabilities(liab || []);
+    }).catch(console.error);
+  }, [user]);
+
   const acctTotal = accounts.reduce((s, a) => s + (Number(a.amount) || 0), 0);
   const totalDebt = liabilities.reduce((s, l) => s + (Number(l.outstanding) || 0), 0);
   const totalEmi = liabilities.reduce((s, l) => s + (Number(l.emi) || 0), 0);
 
-  const addAccount = () => { if (newAcct.name.trim()) { setAccounts([...accounts, { ...newAcct, id: Date.now().toString() }]); setNewAcct({ type: "bank", name: "", bankName: "", amount: "" }); setShowAddAcct(false); } };
-  const removeAccount = (id) => setAccounts(accounts.filter(a => a.id !== id));
-  const addLiability = () => { if (newLiab.name.trim()) { setLiabilities([...liabilities, { ...newLiab, id: Date.now().toString() }]); setNewLiab({ type: "bank", name: "", lender: "", outstanding: "", emi: "", inFixed: true }); setShowAddLiab(false); } };
-  const removeLiability = (id) => setLiabilities(liabilities.filter(l => l.id !== id));
+  const handleAddAccount = async () => {
+    if (!newAcct.name.trim()) return;
+    try {
+      const ref = await addAccount(user.uid, newAcct);
+      setAccounts(prev => [...prev, { ...newAcct, id: ref.id }]);
+      setNewAcct({ type: "bank", name: "", bankName: "", amount: "" });
+      setShowAddAcct(false);
+    } catch (err) { console.error("Add account failed:", err); }
+  };
+  const handleRemoveAccount = async (id) => {
+    try {
+      await deleteAccount(user.uid, id);
+      setAccounts(prev => prev.filter(a => a.id !== id));
+    } catch (err) { console.error("Delete account failed:", err); }
+  };
 
-  const handlePwChange = () => {
+  const handleAddLiability = async () => {
+    if (!newLiab.name.trim()) return;
+    try {
+      const ref = await addLiability(user.uid, newLiab);
+      setLiabilities(prev => [...prev, { ...newLiab, id: ref.id }]);
+      setNewLiab({ type: "bank", name: "", lender: "", outstanding: "", emi: "", inFixed: true });
+      setShowAddLiab(false);
+    } catch (err) { console.error("Add liability failed:", err); }
+  };
+  const handleRemoveLiability = async (id) => {
+    try {
+      await deleteLiability(user.uid, id);
+      setLiabilities(prev => prev.filter(l => l.id !== id));
+    } catch (err) { console.error("Delete liability failed:", err); }
+  };
+
+  // Category/vendor auto-save wrappers
+  const saveIncomeCats = async (items) => {
+    setIncomeCats(items);
+    if (user) await saveCategories(user.uid, "income", items).catch(console.error);
+  };
+  const saveExpCats = async (items) => {
+    setExpCats(items);
+    if (user) await saveCategories(user.uid, "expense", items).catch(console.error);
+  };
+  const saveVendorsFn = async (items) => {
+    setVendors(items);
+    if (user) await saveVendors(user.uid, items).catch(console.error);
+  };
+
+  const handlePwChange = async () => {
     if (!currPw || !newPw || !confirmPw) { setPwToast("All fields required"); setTimeout(() => setPwToast(""), 2000); return; }
     if (newPw.length < 6) { setPwToast("Min 6 characters"); setTimeout(() => setPwToast(""), 2000); return; }
     if (newPw !== confirmPw) { setPwToast("Passwords don't match"); setTimeout(() => setPwToast(""), 2000); return; }
-    setCurrPw(""); setNewPw(""); setConfirmPw("");
-    setShowPwChange(false);
-    setPwToast("Password updated!");
+    try {
+      await changePassword(currPw, newPw);
+      setCurrPw(""); setNewPw(""); setConfirmPw("");
+      setShowPwChange(false);
+      setPwToast("Password updated!");
+    } catch (err) {
+      setPwToast(mapFirebaseError(err.code) || "Password change failed.");
+    }
     setTimeout(() => setPwToast(""), 2500);
   };
 
@@ -1789,7 +1980,7 @@ const ProfileScreen = ({ config, onLogout }) => {
         <Glass grad style={{ padding: 24, marginBottom: 14 }}>
           {/* Edit button */}
           <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: editing ? 8 : 0 }}>
-            <button onClick={() => setEditing(!editing)} style={{
+            <button onClick={editing ? handleSaveProfile : () => setEditing(true)} style={{
               padding: "6px 14px", borderRadius: 10, border: "none", cursor: "pointer",
               background: editing ? C.grad : "rgba(0,0,0,0.04)",
               fontFamily: F, fontSize: 11, fontWeight: 600,
@@ -1921,7 +2112,7 @@ const ProfileScreen = ({ config, onLogout }) => {
                   {acct.bankName && <p style={{ fontFamily: F, fontSize: 11, color: C.t3 }}>{acct.bankName}</p>}
                 </div>
                 <span style={{ fontFamily: F, fontSize: 14, color: C.tx, fontWeight: 700, marginRight: 4 }}>₹{(Number(acct.amount) || 0).toLocaleString("en-IN")}</span>
-                <button onClick={() => removeAccount(acct.id)} style={{ background: "none", border: "none", cursor: "pointer", padding: 2 }}><Ic n="close" s={16} c={C.t3} /></button>
+                <button onClick={() => handleRemoveAccount(acct.id)} style={{ background: "none", border: "none", cursor: "pointer", padding: 2 }}><Ic n="close" s={16} c={C.t3} /></button>
               </div>
             );
           })}
@@ -1938,7 +2129,7 @@ const ProfileScreen = ({ config, onLogout }) => {
               {(newAcct.type === "bank" || newAcct.type === "credit") && <Inp label={newAcct.type === "bank" ? "Bank Name" : "Card Issuer"} value={newAcct.bankName} onChange={v => setNewAcct({...newAcct, bankName: v})} placeholder="e.g. HDFC" />}
               <Inp label="Balance" value={newAcct.amount} onChange={v => setNewAcct({...newAcct, amount: v})} prefix="₹" type="number" placeholder="0" />
               <div style={{ display: "flex", gap: 8 }}>
-                <Btn onClick={addAccount} style={{ flex: 1 }}>Add</Btn>
+                <Btn onClick={handleAddAccount} style={{ flex: 1 }}>Add</Btn>
                 <Btn sec onClick={() => setShowAddAcct(false)} style={{ flex: 0, width: 80 }}>Cancel</Btn>
               </div>
             </div>
@@ -1986,18 +2177,18 @@ const ProfileScreen = ({ config, onLogout }) => {
 
         {/* Income Categories */}
         <Accordion icon="category" title="Income Categories" accent={C.g1}>
-          <ListManager items={incomeCats} setItems={setIncomeCats} accent={C.g1} nameLabel="Category name" />
+          <ListManager items={incomeCats} setItems={saveIncomeCats} accent={C.g1} nameLabel="Category name" />
         </Accordion>
 
         {/* Expense Categories */}
         <Accordion icon="category" title="Expense Categories" accent={C.au}>
-          <ListManager items={expCats} setItems={setExpCats} accent={C.au} nameLabel="Category name" />
+          <ListManager items={expCats} setItems={saveExpCats} accent={C.au} nameLabel="Category name" />
         </Accordion>
 
         {/* Expense Vendors */}
         <Accordion icon="storefront" title="Manage Vendors" accent={C.au}>
           <p style={{ fontFamily: F, fontSize: 12, color: C.t3, marginBottom: 12 }}>Quick-select vendors when adding expenses</p>
-          <ListManager items={vendors} setItems={setVendors} accent={C.au} nameLabel="Vendor name" />
+          <ListManager items={vendors} setItems={saveVendorsFn} accent={C.au} nameLabel="Vendor name" />
         </Accordion>
 
         {/* Liabilities */}
@@ -2023,7 +2214,7 @@ const ProfileScreen = ({ config, onLogout }) => {
                     <p style={{ fontFamily: F, fontSize: 14, color: C.tx, fontWeight: 600 }}>{l.name}</p>
                     <p style={{ fontFamily: F, fontSize: 11, color: C.t3 }}>{l.lender} · {at.label}</p>
                   </div>
-                  <button onClick={() => removeLiability(l.id)} style={{ background: "none", border: "none", cursor: "pointer" }}><Ic n="close" s={16} c={C.t3} /></button>
+                  <button onClick={() => handleRemoveLiability(l.id)} style={{ background: "none", border: "none", cursor: "pointer" }}><Ic n="close" s={16} c={C.t3} /></button>
                 </div>
                 <div style={{ display: "flex", gap: 12, marginTop: 10 }}>
                   <div><p style={{ fontFamily: F, fontSize: 10, color: C.t3 }}>Outstanding</p><p style={{ fontFamily: F, fontSize: 14, color: C.red, fontWeight: 700 }}>₹{(Number(l.outstanding) || 0).toLocaleString("en-IN")}</p></div>
@@ -2055,7 +2246,7 @@ const ProfileScreen = ({ config, onLogout }) => {
                 <span style={{ fontFamily: F, fontSize: 12, color: newLiab.inFixed ? C.g1 : C.t3, fontWeight: 500 }}>Include EMI in fixed expenses</span>
               </div>
               <div style={{ display: "flex", gap: 8 }}>
-                <Btn onClick={addLiability} style={{ flex: 1, background: "linear-gradient(135deg, #E53E3E, #C53030)" }}>Add Liability</Btn>
+                <Btn onClick={handleAddLiability} style={{ flex: 1, background: "linear-gradient(135deg, #E53E3E, #C53030)" }}>Add Liability</Btn>
                 <Btn sec onClick={() => setShowAddLiab(false)} style={{ flex: 0, width: 80 }}>Cancel</Btn>
               </div>
             </div>
@@ -2082,53 +2273,6 @@ const ProfileScreen = ({ config, onLogout }) => {
 // ═══════════════════════════════════
 // ─── REPORTS SCREEN ───
 // ═══════════════════════════════════
-const genMockData = (config) => {
-  const now = new Date();
-  const dIM = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  const today = now.getDate();
-
-  const cats = [
-    { id: "food", label: "Food", icon: "restaurant", color: "#2CC07E" },
-    { id: "groceries", label: "Groceries", icon: "shopping_cart", color: "#1B8C5A" },
-    { id: "fuel", label: "Fuel", icon: "local_gas_station", color: "#C5961B" },
-    { id: "drinks", label: "Drinks", icon: "local_cafe", color: "#E8C84A" },
-    { id: "bills", label: "Bills", icon: "receipt_long", color: "#6F767E" },
-    { id: "home", label: "Home", icon: "home", color: "#3BA1C8" },
-    { id: "debt", label: "Debt", icon: "credit_card", color: "#E53E3E" },
-    { id: "other", label: "Other", icon: "more_horiz", color: "#9A9FA5" },
-  ];
-
-  const vendors = { food: ["Swiggy", "Zomato", "Biryani House", "Tea Stall", "Mess"], groceries: ["BigBasket", "DMart", "Zepto", "Blinkit"], fuel: ["Shell", "HP Petrol", "Indian Oil"], drinks: ["Starbucks", "Chaayos", "CCD"], bills: ["Jio", "Airtel", "KSEB", "Netflix"], home: ["Amazon", "Flipkart", "Local Store"], debt: ["EMI Payment"], other: ["Misc", "Gift", "Parking"] };
-
-  const txns = [];
-  const daily = [];
-  const savpotLedger = [];
-  const dailyBudget = config?.daily || 1000;
-
-  for (let d = 1; d <= Math.min(today, dIM); d++) {
-    const nTxn = Math.floor(Math.random() * 4) + 1;
-    let daySpent = 0;
-    for (let t = 0; t < nTxn; t++) {
-      const cat = cats[Math.floor(Math.random() * cats.length)];
-      const vList = vendors[cat.id] || ["Misc"];
-      const amt = Math.round((Math.random() * 400 + 50) / 10) * 10;
-      daySpent += amt;
-      txns.push({ id: `t-${d}-${t}`, day: d, amount: amt, category: cat.id, vendor: vList[Math.floor(Math.random() * vList.length)], payMethod: ["cash", "bank", "credit"][Math.floor(Math.random() * 3)] });
-    }
-    const saved = Math.max(0, dailyBudget - daySpent);
-    const over = Math.max(0, daySpent - dailyBudget);
-    daily.push({ day: d, budget: dailyBudget, spent: daySpent, saved, over });
-    if (saved > 0) savpotLedger.push({ id: `sp-${d}`, day: d, type: "ADD_LEFTOVER", amount: saved });
-  }
-
-  // Random unlocks
-  if (today > 5) {
-    const unlockDay = 3 + Math.floor(Math.random() * (today - 3));
-    savpotLedger.push({ id: "sp-u1", day: unlockDay, type: "UNLOCK_WITHDRAW", amount: Math.round(Math.random() * 500 + 200) });
-  }
-
-  return { cats, txns, daily, savpotLedger, dIM, today };
-};
 
 const MiniBar = ({ value, max, color, h = 6 }) => (
   <div style={{ height: h, background: "rgba(0,0,0,0.04)", borderRadius: h / 2, overflow: "hidden", flex: 1 }}>
@@ -2137,19 +2281,65 @@ const MiniBar = ({ value, max, color, h = 6 }) => (
 );
 
 const ReportsScreen = ({ config }) => {
+  const { user } = useAuth();
   const [monthOffset, setMonthOffset] = useState(0);
   const [catDetail, setCatDetail] = useState(null);
   const [showAllTxn, setShowAllTxn] = useState(false);
   const [showSavpotDetail, setShowSavpotDetail] = useState(false);
   const [showSummaryBreakdown, setShowSummaryBreakdown] = useState(false);
+  const [reportsLoading, setReportsLoading] = useState(true);
+
+  // Real Firestore data
+  const [txns, setTxns] = useState([]);
+  const [daily, setDaily] = useState([]);
+  const [savpotLedger, setSavpotLedger] = useState([]);
 
   const now = new Date();
   const viewDate = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
   const monthName = viewDate.toLocaleString("en-IN", { month: "long", year: "numeric" });
   const isCurrentMonth = monthOffset === 0;
+  const dIM = new Date(viewDate.getFullYear(), viewDate.getMonth() + 1, 0).getDate();
+  const today = isCurrentMonth ? now.getDate() : dIM;
 
-  const { cats, txns, daily, savpotLedger, dIM, today } = genMockData(config);
+  useEffect(() => {
+    if (!user) return;
+    setReportsLoading(true);
+    const yr = viewDate.getFullYear();
+    const mo = viewDate.getMonth();
+    Promise.all([
+      getExpensesByMonth(user.uid, yr, mo),
+      getDailySnapshots(user.uid, yr, mo),
+      getSavPotByMonth(user.uid, yr, mo),
+    ]).then(([expenses, snapshots, savpot]) => {
+      setTxns(expenses.map(e => ({
+        ...e,
+        day: e.day ?? (e.dateTime?.toDate ? e.dateTime.toDate().getDate() : 1),
+      })));
+      setDaily(snapshots.map(s => ({
+        day: Number(s.date?.split("-")[2] ?? s.day ?? 1),
+        budget: s.dailyBudget,
+        spent: s.spent,
+        saved: s.savedToPot,
+        over: s.overspent,
+      })));
+      setSavpotLedger(savpot.map(e => ({
+        ...e,
+        day: e.day ?? (e.dateTime?.toDate ? e.dateTime.toDate().getDate() : 1),
+      })));
+    }).catch(console.error)
+      .finally(() => setReportsLoading(false));
+  }, [user, monthOffset]);
+
   const activeDays = isCurrentMonth ? today : dIM;
+
+  // Fallback: synthesize daily snapshots from transactions if none stored yet
+  const effectiveDaily = daily.length > 0 ? daily : txns.length > 0 ? Object.entries(
+    txns.reduce((acc, t) => ({ ...acc, [t.day]: (acc[t.day] || 0) + t.amount }), {})
+  ).map(([d, spent]) => ({
+    day: +d, budget: config?.daily || 0, spent,
+    saved: Math.max(0, (config?.daily || 0) - spent),
+    over: Math.max(0, spent - (config?.daily || 0)),
+  })) : [];
 
   // 3.1 Monthly Summary
   const totalIncome = config?.income || 0;
@@ -2159,7 +2349,7 @@ const ReportsScreen = ({ config }) => {
 
   // 3.2 Spending
   const totalSpent = txns.reduce((s, t) => s + t.amount, 0);
-  const catTotals = cats.map(cat => ({
+  const catTotals = EXPENSE_CATEGORIES.map(cat => ({
     ...cat,
     total: txns.filter(t => t.category === cat.id).reduce((s, t) => s + t.amount, 0),
     count: txns.filter(t => t.category === cat.id).length,
@@ -2173,31 +2363,31 @@ const ReportsScreen = ({ config }) => {
 
   // 3.4 Discipline
   const avgPerDay = activeDays > 0 ? Math.round(totalSpent / activeDays) : 0;
-  const daysUnder = daily.filter(d => d.spent <= d.budget).length;
-  const daysOver = daily.filter(d => d.spent > d.budget).length;
+  const daysUnder = effectiveDaily.filter(d => d.spent <= d.budget).length;
+  const daysOver = effectiveDaily.filter(d => d.spent > d.budget).length;
 
   // 3.5 Runway
   const runway = [];
   let cumSpent = 0;
-  for (let i = 0; i < daily.length; i++) {
-    cumSpent += daily[i].spent;
+  for (let i = 0; i < effectiveDaily.length; i++) {
+    cumSpent += effectiveDaily[i].spent;
     const elapsed = i + 1;
     const avgSoFar = cumSpent / elapsed;
     const remaining = approvedBalance - cumSpent;
     const runDays = avgSoFar > 0 ? Math.round(remaining / avgSoFar) : dIM - elapsed;
-    runway.push({ day: daily[i].day, value: Math.max(0, runDays) });
+    runway.push({ day: effectiveDaily[i].day, value: Math.max(0, runDays) });
   }
   const maxRunway = Math.max(...runway.map(r => r.value), 1);
   const currentRunway = runway.length > 0 ? runway[runway.length - 1].value : 0;
 
   // Daily chart
-  const maxDaySpend = Math.max(...daily.map(d => d.spent), config?.daily || 1);
+  const maxDaySpend = Math.max(...effectiveDaily.map(d => d.spent), config?.daily || 1);
 
   const dailyBudget = config?.daily || 0;
 
   // ── SUB-SCREENS ──
   if (catDetail) {
-    const cat = cats.find(c => c.id === catDetail);
+    const cat = EXPENSE_CATEGORIES.find(c => c.id === catDetail);
     const catTxns = txns.filter(t => t.category === catDetail).sort((a, b) => b.day - a.day);
     const catTotal = catTxns.reduce((s, t) => s + t.amount, 0);
     return (
@@ -2242,7 +2432,7 @@ const ReportsScreen = ({ config }) => {
           <h2 style={{ fontFamily: F, fontSize: 20, color: C.tx, fontWeight: 700, marginBottom: 4 }}>All Transactions</h2>
           <p style={{ fontFamily: F, fontSize: 13, color: C.t3, marginBottom: 20 }}>{monthName} · {sorted.length} transactions</p>
           {sorted.map(t => {
-            const cat = cats.find(c => c.id === t.category);
+            const cat = EXPENSE_CATEGORIES.find(c => c.id === t.category);
             return (
               <Glass key={t.id} style={{ padding: 14, marginBottom: 8, display: "flex", alignItems: "center", gap: 10 }}>
                 <div style={{ width: 38, height: 38, borderRadius: 12, background: `${cat?.color || "#999"}15`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
@@ -2471,7 +2661,7 @@ const ReportsScreen = ({ config }) => {
           <div style={{ marginTop: 16 }}>
             <p style={{ fontFamily: F, fontSize: 11, color: C.t3, fontWeight: 500, marginBottom: 8 }}>Daily Spending</p>
             <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 80 }}>
-              {daily.map(d => {
+              {effectiveDaily.map(d => {
                 const h = d.spent > 0 ? Math.max((d.spent / maxDaySpend) * 100, 4) : 0;
                 const over = d.spent > dailyBudget;
                 return (
@@ -2483,7 +2673,7 @@ const ReportsScreen = ({ config }) => {
             <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
               <span style={{ fontFamily: F, fontSize: 9, color: C.t3 }}>Day 1</span>
               <span style={{ fontFamily: F, fontSize: 9, color: C.t3 }}>Budget: ₹{dailyBudget.toLocaleString("en-IN")}/d</span>
-              <span style={{ fontFamily: F, fontSize: 9, color: C.t3 }}>Day {daily.length}</span>
+              <span style={{ fontFamily: F, fontSize: 9, color: C.t3 }}>Day {effectiveDaily.length}</span>
             </div>
           </div>
         </Glass>
@@ -2562,34 +2752,39 @@ const SavPotScreen = ({ config }) => {
   const daysLeft = dIM - today;
   const dailyBudget = config?.daily || 1000;
 
-  // ── State ──
-  const [balance, setBalance] = useState(() => {
-    let b = config?.savpotDirect || 0;
-    for (let d = 1; d < today; d++) b += Math.max(0, Math.round(dailyBudget * (0.3 + Math.random() * 0.4)));
-    return b;
-  });
-
-  const [ledger, setLedger] = useState(() => {
-    const entries = [];
-    let running = config?.savpotDirect || 0;
-    for (let d = 1; d < today; d++) {
-      const saved = Math.max(0, Math.round(dailyBudget * (0.3 + Math.random() * 0.4)));
-      if (saved > 0) {
-        running += saved;
-        entries.push({ id: `add-${d}`, day: d, type: "ADD_LEFTOVER", amount: saved, date: new Date(now.getFullYear(), now.getMonth(), d) });
-      }
-    }
-    if (today > 5) {
-      const unlockAmt = Math.round(Math.random() * 400 + 200);
-      running -= unlockAmt;
-      entries.push({ id: "unlock-1", day: 4, type: "UNLOCK_TO_DAILY", amount: unlockAmt, date: new Date(now.getFullYear(), now.getMonth(), 4) });
-    }
-    return entries.sort((a, b) => b.day - a.day);
-  });
-
+  // ── Auth + Firestore state ──
+  const { user } = useAuth();
+  const [balance, setBalance] = useState(0);
+  const [ledger, setLedger] = useState([]);
   const [isLocked, setIsLocked] = useState(false);
   const [lockEnd, setLockEnd] = useState(null);
   const [lockDaysLeft, setLockDaysLeft] = useState(0);
+  const [savpotLoading, setSavpotLoading] = useState(true);
+
+  useEffect(() => {
+    if (!user) return;
+    setSavpotLoading(true);
+    Promise.all([
+      getSavPotState(user.uid),
+      getSavPotByMonth(user.uid, now.getFullYear(), now.getMonth()),
+    ]).then(([state, entries]) => {
+      setBalance(state?.balance ?? 0);
+      setIsLocked(state?.isLocked ?? false);
+      const end = state?.lockEnd?.toDate ? state.lockEnd.toDate() : null;
+      setLockEnd(end);
+      if (end) {
+        const daysLeft = Math.max(0, Math.ceil((end.getTime() - now.getTime()) / 86400000));
+        setLockDaysLeft(daysLeft);
+      }
+      const mapped = entries.map(e => ({
+        ...e,
+        day: e.day ?? (e.dateTime?.toDate ? e.dateTime.toDate().getDate() : today),
+        date: e.dateTime?.toDate ? e.dateTime.toDate() : new Date(),
+      })).sort((a, b) => b.day - a.day);
+      setLedger(mapped);
+    }).catch(console.error)
+      .finally(() => setSavpotLoading(false));
+  }, [user]);
 
   const [view, setView] = useState("main"); // main | unlock | lock | history | monthend
   const [unlockAmt, setUnlockAmt] = useState("");
@@ -2602,7 +2797,8 @@ const SavPotScreen = ({ config }) => {
   const [toast, setToast] = useState("");
 
   const savedThisMonth = ledger.filter(e => e.type === "ADD_LEFTOVER").reduce((s, e) => s + e.amount, 0);
-  const unlockedThisMonth = ledger.filter(e => e.type === "UNLOCK_TO_DAILY").reduce((s, e) => s + e.amount, 0);
+  // Handle both "UNLOCK_TO_DAILY" (UI) and "UNLOCK_WITHDRAW" (Firestore) type strings
+  const unlockedThisMonth = ledger.filter(e => e.type === "UNLOCK_TO_DAILY" || e.type === "UNLOCK_WITHDRAW").reduce((s, e) => s + e.amount, 0);
 
   // Survival preview
   const unlockNum = Number(unlockAmt) || 0;
@@ -2615,52 +2811,72 @@ const SavPotScreen = ({ config }) => {
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(""), 2500); };
 
-  const doLock = () => {
+  const doLock = async () => {
     const end = new Date(now.getTime() + lockDays * 86400000);
-    setIsLocked(true);
-    setLockEnd(end);
-    setLockDaysLeft(lockDays);
-    setLedger(prev => [{ id: `lock-${Date.now()}`, day: today, type: "LOCK_SET", amount: 0, date: now, meta: { lockDays } }, ...prev]);
+    try {
+      await updateSavPotState(user.uid, { balance, isLocked: true, lockEnd: end, lockDays });
+      await addSavPotEntry(user.uid, { type: "LOCK_SET", amount: 0, day: today });
+      setIsLocked(true);
+      setLockEnd(end);
+      setLockDaysLeft(lockDays);
+      setLedger(prev => [{ id: `lock-${Date.now()}`, day: today, type: "LOCK_SET", amount: 0, date: now, meta: { lockDays } }, ...prev]);
+    } catch (err) { console.error("Lock failed:", err); }
     setView("main");
     showToast(`SavPot locked for ${lockDays} days`);
   };
 
-  const doBreakLock = () => {
-    setIsLocked(false);
-    setLockEnd(null);
-    setLockDaysLeft(0);
-    setBreakStep(0);
-    setLedger(prev => [{ id: `break-${Date.now()}`, day: today, type: "LOCK_BROKEN", amount: 0, date: now, meta: { reason: breakReason } }, ...prev]);
+  const doBreakLock = async () => {
+    try {
+      await updateSavPotState(user.uid, { isLocked: false, lockEnd: null, lockDays: 0 });
+      await addSavPotEntry(user.uid, { type: "LOCK_BROKEN", amount: 0, day: today, meta: { reason: breakReason } });
+      setIsLocked(false);
+      setLockEnd(null);
+      setLockDaysLeft(0);
+      setBreakStep(0);
+      setLedger(prev => [{ id: `break-${Date.now()}`, day: today, type: "LOCK_BROKEN", amount: 0, date: now, meta: { reason: breakReason } }, ...prev]);
+    } catch (err) { console.error("Break lock failed:", err); }
     showToast("Lock broken. SavPot is unlocked.");
     setBreakReason("");
   };
 
-  const doUnlock = () => {
+  const doUnlock = async () => {
     if (unlockNum <= 0 || unlockNum > balance) return;
     if (isLocked) { showToast(`SavPot locked until ${lockEnd?.toLocaleDateString("en-IN", { day: "numeric", month: "short" })}`); return; }
-    setBalance(prev => prev - unlockNum);
-    setLedger(prev => [{ id: `unlock-${Date.now()}`, day: today, type: "UNLOCK_TO_DAILY", amount: unlockNum, date: now }, ...prev]);
+    const newBalance = balance - unlockNum;
+    try {
+      await updateSavPotState(user.uid, { balance: newBalance });
+      await addSavPotEntry(user.uid, { type: "UNLOCK_WITHDRAW", amount: unlockNum, day: today });
+      setBalance(newBalance);
+      setLedger(prev => [{ id: `unlock-${Date.now()}`, day: today, type: "UNLOCK_TO_DAILY", amount: unlockNum, date: now }, ...prev]);
+    } catch (err) { console.error("Unlock failed:", err); }
     setUnlockAmt("");
     setView("main");
     showToast(`₹${unlockNum.toLocaleString("en-IN")} moved to daily budget`);
   };
 
-  const doMonthEnd = () => {
+  const doMonthEnd = async () => {
     const type = monthEndChoice === "keep" ? "MONTH_END_KEEP" : monthEndChoice === "next" ? "MONTH_END_TO_NEXT_MONTH_BUDGET" : "MONTH_END_TO_INCOME_SOURCE";
-    setLedger(prev => [{ id: `me-${Date.now()}`, day: today, type, amount: balance, date: now, meta: { source: monthEndSource } }, ...prev]);
-    if (monthEndChoice !== "keep") setBalance(0);
+    const newBalance = monthEndChoice === "keep" ? balance : 0;
+    try {
+      await updateSavPotState(user.uid, { balance: newBalance });
+      await addSavPotEntry(user.uid, { type, amount: balance, day: today, meta: { source: monthEndSource } });
+      setLedger(prev => [{ id: `me-${Date.now()}`, day: today, type, amount: balance, date: now, meta: { source: monthEndSource } }, ...prev]);
+      if (monthEndChoice !== "keep") setBalance(0);
+    } catch (err) { console.error("Month end failed:", err); }
     setView("main");
     showToast(monthEndChoice === "keep" ? "SavPot balance carried forward" : "Funds transferred successfully");
   };
 
+  const isUnlockType = (type) => type === "UNLOCK_TO_DAILY" || type === "UNLOCK_WITHDRAW";
+
   const filteredLedger = ledgerFilter === "all" ? ledger :
     ledgerFilter === "added" ? ledger.filter(e => e.type === "ADD_LEFTOVER") :
-    ledgerFilter === "unlocked" ? ledger.filter(e => e.type === "UNLOCK_TO_DAILY") :
+    ledgerFilter === "unlocked" ? ledger.filter(e => isUnlockType(e.type)) :
     ledger.filter(e => e.type.includes("LOCK"));
 
   const ledgerIcon = (type) => {
     if (type === "ADD_LEFTOVER") return { ic: "arrow_downward", clr: C.g1, prefix: "+" };
-    if (type === "UNLOCK_TO_DAILY") return { ic: "arrow_upward", clr: C.au, prefix: "-" };
+    if (isUnlockType(type)) return { ic: "arrow_upward", clr: C.au, prefix: "-" };
     if (type === "LOCK_SET") return { ic: "lock", clr: C.t2, prefix: "" };
     if (type === "LOCK_BROKEN") return { ic: "lock_open", clr: C.red, prefix: "" };
     if (type === "LOCK_AUTO_EXPIRED") return { ic: "lock_clock", clr: C.t3, prefix: "" };
@@ -2670,7 +2886,7 @@ const SavPotScreen = ({ config }) => {
 
   const ledgerLabel = (type) => {
     if (type === "ADD_LEFTOVER") return "Daily leftover saved";
-    if (type === "UNLOCK_TO_DAILY") return "Unlocked to daily budget";
+    if (isUnlockType(type)) return "Unlocked to daily budget";
     if (type === "LOCK_SET") return "SavPot locked";
     if (type === "LOCK_BROKEN") return "Lock broken";
     if (type === "LOCK_AUTO_EXPIRED") return "Lock expired";
@@ -3083,24 +3299,49 @@ const SavPotScreen = ({ config }) => {
 // ─── MAIN APP ───
 // ═══════════════════════════════════
 export default function SavPotApp() {
+  const { user, config, loading, refreshConfig } = useAuth();
   const [screen, setScreen] = useState("splash");
-  const [config, setConfig] = useState(null);
   const [tab, setTab] = useState("home");
 
-  const handleLogout = () => { setConfig(null); setTab("home"); setScreen("signup"); };
+  // Drive screen navigation from Firebase auth state
+  useEffect(() => {
+    if (loading) return; // wait for Firebase session to resolve
+    if (!user) { setScreen("signup"); return; }
+    if (!config) { setScreen("setup"); return; }
+    setScreen("app");
+  }, [user, config, loading]);
+
+  const handleLogout = async () => {
+    await logOut();
+    setTab("home");
+    // useEffect above routes to "signup" once user becomes null
+  };
 
   return (
     <div style={{ maxWidth: 430, margin: "0 auto" }}>
       <FontLoader />
       <CSS />
       {screen === "splash" && <SplashScreen onDone={() => setScreen("signup")} />}
-      {screen === "signup" && <SignupScreen onDone={() => setScreen("setup")} />}
-      {screen === "setup" && <SetupWizard onDone={(cfg) => { setConfig(cfg); setScreen("done"); }} />}
-      {screen === "done" && <DoneScreen config={config} onGo={() => { setScreen("app"); setTab("home"); }} />}
+      {screen === "signup" && <SignupScreen onDone={() => {}} />}
+      {screen === "setup" && (
+        <SetupWizard
+          onDone={async (cfg) => {
+            await saveSetupConfig(user.uid, cfg);
+            await refreshConfig();
+            setScreen("done");
+          }}
+        />
+      )}
+      {screen === "done" && (
+        <DoneScreen
+          config={config}
+          onGo={async () => { await refreshConfig(); setScreen("app"); setTab("home"); }}
+        />
+      )}
       {screen === "app" && config && (
         <>
-          {tab === "home" && <HomeScreen config={config} onNav={setTab} />}
-          {tab === "savpot" && <SavPotScreen config={config} />}
+          {tab === "home"    && <HomeScreen config={config} onNav={setTab} />}
+          {tab === "savpot"  && <SavPotScreen config={config} />}
           {tab === "reports" && <ReportsScreen config={config} />}
           {tab === "profile" && <ProfileScreen config={config} onLogout={handleLogout} />}
           <BottomNav active={tab} onNav={setTab} />
