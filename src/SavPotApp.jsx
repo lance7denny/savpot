@@ -533,6 +533,9 @@ const mapFirebaseError = (code) => ({
   "auth/too-many-requests": "Too many attempts. Please try again later.",
   "auth/network-request-failed": "Network error. Check your connection.",
   "auth/popup-closed-by-user": null, // silent — user closed the Google popup
+  "auth/popup-blocked": "Popup was blocked by your browser. Please allow popups and try again.",
+  "auth/unauthorized-domain": "This domain isn't authorized for Google sign-in. Please contact support.",
+  "auth/cancelled-popup-request": null, // silent — another popup opened
 }[code] ?? "Something went wrong. Please try again.");
 
 const SignupScreen = ({ onDone }) => {
