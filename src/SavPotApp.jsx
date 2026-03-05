@@ -3303,16 +3303,27 @@ const SavPotScreen = ({ config }) => {
 // ═══════════════════════════════════
 export default function SavPotApp() {
   const { user, config, loading, refreshConfig } = useAuth();
-  const [screen, setScreen] = useState("splash");
+  const splashSeen = localStorage.getItem("splashSeen");
+  const [screen, setScreen] = useState(splashSeen ? "loading" : "splash");
   const [tab, setTab] = useState("home");
 
   // Drive screen navigation from Firebase auth state
+  // Never interrupt the splash screen — wait for it to call onDone
   useEffect(() => {
-    if (loading) return; // wait for Firebase session to resolve
+    if (screen === "splash") return;
+    if (loading) return;
     if (!user) { setScreen("signup"); return; }
     if (!config) { setScreen("setup"); return; }
     setScreen("app");
-  }, [user, config, loading]);
+  }, [user, config, loading, screen]);
+
+  const handleSplashDone = () => {
+    localStorage.setItem("splashSeen", "1");
+    if (loading) { setScreen("loading"); return; }
+    if (!user) { setScreen("signup"); return; }
+    if (!config) { setScreen("setup"); return; }
+    setScreen("app");
+  };
 
   const handleLogout = async () => {
     await logOut();
@@ -3324,7 +3335,8 @@ export default function SavPotApp() {
     <div style={{ maxWidth: 430, margin: "0 auto" }}>
       <FontLoader />
       <CSS />
-      {screen === "splash" && <SplashScreen onDone={() => setScreen("signup")} />}
+      {screen === "splash" && <SplashScreen onDone={handleSplashDone} />}
+      {screen === "loading" && <div style={{ minHeight: "100dvh" }} />}
       {screen === "signup" && <SignupScreen onDone={() => {}} />}
       {screen === "setup" && (
         <SetupWizard
