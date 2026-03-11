@@ -1314,6 +1314,12 @@ const HomeScreen = ({ config, onNav }) => {
     getSavPotState(user.uid).then(s => setSavpotBal(s?.balance ?? 0)).catch(console.error);
   }, [user]);
 
+  const [savedVendors, setSavedVendors] = useState([]);
+  useEffect(() => {
+    if (!user) return;
+    getVendors(user.uid).then(v => { if (v?.length) setSavedVendors(v); }).catch(console.error);
+  }, [user]);
+
   // Streak
   const streak = (() => {
     let s = 0;
@@ -1624,7 +1630,7 @@ const HomeScreen = ({ config, onNav }) => {
       </button>
 
       {/* ── ADD EXPENSE SHEET ── */}
-      {showExpense && <AddExpenseSheet remaining={remaining} overspent={overspent} dailyBudget={dailyBudget} prefill={prefill} onSave={handleAddExpense} onClose={() => { setShowExpense(false); setPrefill(null); }} />}
+      {showExpense && <AddExpenseSheet remaining={remaining} overspent={overspent} dailyBudget={dailyBudget} prefill={prefill} savedVendors={savedVendors} onSave={handleAddExpense} onClose={() => { setShowExpense(false); setPrefill(null); }} />}
     </div>
   );
 };
@@ -1641,9 +1647,10 @@ const EXPENSE_CATEGORIES = [
   { id: "other", label: "Other", icon: "more_horiz", color: "#9A9FA5" },
 ];
 
-const AddExpenseSheet = ({ remaining, overspent, dailyBudget, prefill, onSave, onClose }) => {
+const AddExpenseSheet = ({ remaining, overspent, dailyBudget, prefill, savedVendors = [], onSave, onClose }) => {
   const [amt, setAmt] = useState(prefill?.amount || "");
   const [cat, setCat] = useState(prefill?.category || "Food");
+  const [catId, setCatId] = useState(prefill?.catId || "food");
   const [catIcon, setCatIcon] = useState(prefill?.catIcon || "restaurant");
   const [catColor, setCatColor] = useState(prefill?.catColor || "#2CC07E");
   const [vendor, setVendor] = useState(prefill?.vendor || "");
@@ -1655,7 +1662,10 @@ const AddExpenseSheet = ({ remaining, overspent, dailyBudget, prefill, onSave, o
   const willOverspend = afterRemaining < 0;
   const expectedSavpot = Math.max(0, remaining - amtNum);
 
-  const suggestions = ["Swiggy", "Zomato", "Starbucks", "Amazon", "Shell", "DMart", "BigBasket", "Zepto"];
+  // Vendors filtered by selected category; fallback hints shown only when no category selected
+  const catVendors = catId ? savedVendors.filter(v => v.categoryId === catId) : [];
+  const fallbackVendors = ["Swiggy", "Zomato", "Starbucks", "Amazon", "Shell", "DMart", "BigBasket", "Zepto"];
+  const suggestions = catId ? catVendors.map(v => v.label) : fallbackVendors;
 
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 200, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
@@ -1685,7 +1695,7 @@ const AddExpenseSheet = ({ remaining, overspent, dailyBudget, prefill, onSave, o
         <p style={{ fontFamily: F, fontSize: 12, color: C.t3, fontWeight: 500, marginBottom: 8 }}>Category</p>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6, marginBottom: 16 }}>
           {EXPENSE_CATEGORIES.map(c => (
-            <div key={c.id} onClick={() => { setCat(c.label); setCatIcon(c.icon); setCatColor(c.color); }} style={{
+            <div key={c.id} onClick={() => { setCat(c.label); setCatId(c.id); setCatIcon(c.icon); setCatColor(c.color); setVendor(""); }} style={{
               padding: "10px 4px", borderRadius: 12, textAlign: "center", cursor: "pointer", transition: "all 0.15s",
               border: cat === c.label ? `2px solid ${c.color}` : "1px solid rgba(0,0,0,0.06)",
               background: cat === c.label ? `${c.color}10` : "rgba(255,255,255,0.4)",
@@ -1778,6 +1788,14 @@ const Accordion = ({ icon, title, accent = C.g1, children, defaultOpen = false }
     </Glass>
   );
 };
+
+const GroupLabel = ({ label, color }) => (
+  <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "18px 2px 6px" }}>
+    <div style={{ height: 1, flex: 1, background: "rgba(0,0,0,0.06)" }} />
+    <span style={{ fontFamily: F, fontSize: 10, fontWeight: 700, color: color || C.t3, letterSpacing: "1.2px", textTransform: "uppercase" }}>{label}</span>
+    <div style={{ height: 1, flex: 1, background: "rgba(0,0,0,0.06)" }} />
+  </div>
+);
 
 // ═══════════════════════════════════
 // ─── PROFILE SCREEN ───
@@ -1893,6 +1911,76 @@ const ProfileScreen = ({ config, onLogout, onEditSetup }) => {
   const [liabilities, setLiabilities] = useState([]);
   const [showAddLiab, setShowAddLiab] = useState(false);
   const [newLiab, setNewLiab] = useState({ type: "bank", name: "", lender: "", outstanding: "", emi: "", inFixed: true });
+  const [addingVendor, setAddingVendor] = useState(false);
+  const [newVendorName, setNewVendorName] = useState("");
+  const [newVendorCat, setNewVendorCat] = useState(null);
+
+  // Editable income items (from setup config)
+  const [editIncItems, setEditIncItems] = useState([]);
+  const [incAcctLinks, setIncAcctLinks] = useState({});
+  const [incItemsDirty, setIncItemsDirty] = useState(false);
+  const [savingInc, setSavingInc] = useState(false);
+
+  // Editable expense items (from setup config)
+  const [editExpItems, setEditExpItems] = useState([]);
+  const [expItemsDirty, setExpItemsDirty] = useState(false);
+  const [savingExp, setSavingExp] = useState(false);
+
+  useEffect(() => {
+    if (config?.incomeItems?.length > 0) {
+      setEditIncItems(config.incomeItems.map(i => ({ ...i })));
+      const links = {};
+      config.incomeItems.forEach((item, i) => { if (item.accountId) links[i] = item.accountId; });
+      setIncAcctLinks(links);
+    }
+    if (config?.expenseItems?.length > 0) {
+      setEditExpItems(config.expenseItems.map(i => ({ ...i })));
+    }
+  }, [config]);
+
+  const handleSaveIncItems = async () => {
+    setSavingInc(true);
+    try {
+      const updated = editIncItems.map((item, i) => ({ ...item, accountId: incAcctLinks[i] || null }));
+      const newIncome = updated.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+      await saveSetupConfig(user.uid, { ...config, incomeItems: updated, income: newIncome || config.income });
+      setIncItemsDirty(false);
+      setPwToast("Income updated!"); setTimeout(() => setPwToast(""), 2000);
+    } catch (e) { console.error(e); }
+    setSavingInc(false);
+  };
+
+  const handleSaveExpItems = async () => {
+    setSavingExp(true);
+    try {
+      const expSum = editExpItems.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+      await saveSetupConfig(user.uid, { ...config, expenseItems: editExpItems, mandatory: expSum || config.mandatory });
+      setExpItemsDirty(false);
+      setPwToast("Expenses updated!"); setTimeout(() => setPwToast(""), 2000);
+    } catch (e) { console.error(e); }
+    setSavingExp(false);
+  };
+
+  const handleAddIncome = async () => {
+    const amt = Number(addIncAmt);
+    if (!amt) return;
+    try {
+      if (addIncTarget === "savpot") {
+        const state = await getSavPotState(user.uid);
+        await updateSavPotState(user.uid, { balance: (state.balance || 0) + amt });
+        await addSavPotEntry(user.uid, { type: "SETUP_DIRECT", amount: amt, reason: "Manual income added to SavPot" });
+      } else {
+        const now = new Date();
+        const daysLeft = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate() - now.getDate() + 1;
+        const newIncome = (config.income || 0) + amt;
+        const newBalance = newIncome - (config.mandatory || 0) - (config.investments || 0);
+        const newDaily = daysLeft > 0 ? Math.floor(newBalance / daysLeft) : config.daily;
+        await saveSetupConfig(user.uid, { ...config, income: newIncome, daily: Math.max(newDaily, config.daily) });
+      }
+      setPwToast("Income added!"); setTimeout(() => setPwToast(""), 2000);
+      setShowAddIncome(false); setAddIncAmt("");
+    } catch (e) { console.error(e); }
+  };
 
   useEffect(() => {
     if (!user) return;
@@ -2112,69 +2200,58 @@ const ProfileScreen = ({ config, onLogout, onEditSetup }) => {
           </button>
         </Section>
 
-        {/* ── ACCORDION SECTIONS ── */}
+        {/* ══════════════════════════════════════ */}
+        {/* ── INCOME GROUP ── */}
+        {/* ══════════════════════════════════════ */}
+        <GroupLabel label="Income" color={C.g1} />
 
-        {/* Manage Accounts */}
-        <Accordion icon="account_balance" title="Manage Accounts" accent={C.g1}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 14px", borderRadius: 12, background: `${C.g1}08`, marginBottom: 14 }}>
-            <span style={{ fontFamily: F, fontSize: 12, color: C.t2, fontWeight: 500 }}>Total Balance</span>
-            <span style={{ fontFamily: F, fontSize: 20, color: C.g1, fontWeight: 700 }}>₹{acctTotal.toLocaleString("en-IN")}</span>
-          </div>
-          {accounts.map(acct => {
-            const at = ACCT_TYPES.find(t => t.id === acct.type) || ACCT_TYPES[0];
-            return (
-              <div key={acct.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: "1px solid rgba(0,0,0,0.04)" }}>
-                <div style={{ width: 34, height: 34, borderRadius: 10, background: `${C.g1}12`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                  <Ic n={at.icon} s={16} c={C.g1} f />
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <p style={{ fontFamily: F, fontSize: 13, color: C.tx, fontWeight: 600 }}>{acct.name}</p>
-                  {acct.bankName && <p style={{ fontFamily: F, fontSize: 11, color: C.t3 }}>{acct.bankName}</p>}
-                </div>
-                <span style={{ fontFamily: F, fontSize: 14, color: C.tx, fontWeight: 700, marginRight: 4 }}>₹{(Number(acct.amount) || 0).toLocaleString("en-IN")}</span>
-                <button onClick={() => handleRemoveAccount(acct.id)} style={{ background: "none", border: "none", cursor: "pointer", padding: 2 }}><Ic n="close" s={16} c={C.t3} /></button>
+        {/* Income Summary */}
+        <Glass style={{ marginBottom: 10, padding: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: editIncItems.length > 0 ? 14 : 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ width: 32, height: 32, borderRadius: 10, background: `${C.g1}12`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <Ic n="arrow_downward" s={16} c={C.g1} f />
               </div>
-            );
-          })}
-          {showAddAcct ? (
-            <div style={{ marginTop: 12, padding: 14, borderRadius: 14, background: "rgba(255,255,255,0.4)", border: "1px solid rgba(0,0,0,0.06)", animation: "fadeUp 0.2s ease-out" }}>
-              <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
-                {ACCT_TYPES.map(at => (
-                  <div key={at.id} onClick={() => setNewAcct({...newAcct, type: at.id})} style={{ padding: "6px 12px", borderRadius: 10, cursor: "pointer", border: newAcct.type === at.id ? `2px solid ${C.g1}` : "1px solid rgba(0,0,0,0.06)", background: newAcct.type === at.id ? C.gp : "transparent" }}>
-                    <span style={{ fontFamily: F, fontSize: 11, color: newAcct.type === at.id ? C.g1 : C.t3, fontWeight: 500 }}>{at.label}</span>
-                  </div>
-                ))}
-              </div>
-              <Inp label="Account Name" value={newAcct.name} onChange={v => setNewAcct({...newAcct, name: v})} placeholder="e.g. Savings Account" />
-              {(newAcct.type === "bank" || newAcct.type === "credit") && <Inp label={newAcct.type === "bank" ? "Bank Name" : "Card Issuer"} value={newAcct.bankName} onChange={v => setNewAcct({...newAcct, bankName: v})} placeholder="e.g. HDFC" />}
-              <Inp label="Balance" value={newAcct.amount} onChange={v => setNewAcct({...newAcct, amount: v})} prefix="₹" type="number" placeholder="0" />
-              <div style={{ display: "flex", gap: 8 }}>
-                <Btn onClick={handleAddAccount} style={{ flex: 1 }}>Add</Btn>
-                <Btn sec onClick={() => setShowAddAcct(false)} style={{ flex: 0, width: 80 }}>Cancel</Btn>
-              </div>
+              <span style={{ fontFamily: F, fontSize: 14, color: C.tx, fontWeight: 600 }}>Monthly Income</span>
             </div>
+            <span style={{ fontFamily: F, fontSize: 18, color: C.g1, fontWeight: 700 }}>₹{(config?.income || 0).toLocaleString("en-IN")}</span>
+          </div>
+          {editIncItems.length > 0 ? (
+            <>
+              {editIncItems.map((item, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 0", borderBottom: "1px solid rgba(0,0,0,0.04)" }}>
+                  <Ic n={item.icon || "work"} s={14} c={C.g1} />
+                  <span style={{ fontFamily: F, fontSize: 13, color: C.t2, flex: 1 }}>{item.label}</span>
+                  <div style={{ display: "flex", alignItems: "center", background: "rgba(0,0,0,0.03)", borderRadius: 8, padding: "4px 8px" }}>
+                    <span style={{ fontFamily: F, fontSize: 12, color: C.t3 }}>₹</span>
+                    <input type="number" value={item.amount} onChange={e => { const upd = [...editIncItems]; upd[i] = { ...upd[i], amount: e.target.value }; setEditIncItems(upd); setIncItemsDirty(true); }} style={{ width: 80, border: "none", background: "transparent", fontFamily: F, fontSize: 13, color: C.tx, fontWeight: 600, textAlign: "right", outline: "none" }} />
+                  </div>
+                </div>
+              ))}
+              {incItemsDirty && <Btn onClick={handleSaveIncItems} style={{ marginTop: 12 }}>{savingInc ? "Saving…" : "Save Changes"}</Btn>}
+            </>
           ) : (
-            <button onClick={() => setShowAddAcct(true)} style={{ width: "100%", marginTop: 10, padding: "10px", borderRadius: 12, border: `1.5px dashed ${C.g1}40`, background: `${C.g1}06`, fontFamily: F, fontSize: 12, fontWeight: 600, color: C.g1, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-              <Ic n="add" s={16} c={C.g1} /> Add Account
-            </button>
+            <p style={{ fontFamily: F, fontSize: 12, color: C.t3, marginTop: 8 }}>Income entered as a total. Use <span style={{ color: C.g1, fontWeight: 600, cursor: "pointer" }} onClick={onEditSetup}>Edit Setup</span> to add income by category.</p>
           )}
-        </Accordion>
 
-        {/* Additional Income */}
-        <Accordion icon="add_card" title="Additional Income" accent={C.g1}>
-          {showAddIncome ? (
-            <div style={{ animation: "fadeUp 0.2s ease-out" }}>
+          {/* Add Income inline */}
+          {!showAddIncome ? (
+            <button onClick={() => setShowAddIncome(true)} style={{ width: "100%", marginTop: 12, padding: "10px", borderRadius: 12, border: `1.5px dashed ${C.g1}40`, background: `${C.g1}06`, fontFamily: F, fontSize: 12, fontWeight: 600, color: C.g1, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+              <Ic n="add" s={16} c={C.g1} /> Add Income
+            </button>
+          ) : (
+            <div style={{ marginTop: 12, padding: 14, borderRadius: 14, background: "rgba(255,255,255,0.5)", border: "1px solid rgba(0,0,0,0.06)", animation: "fadeUp 0.2s ease-out" }}>
               <Inp label="Amount" value={addIncAmt} onChange={setAddIncAmt} prefix="₹" type="number" placeholder="10000" />
-              <p style={{ fontFamily: F, fontSize: 12, color: C.t3, marginBottom: 8, fontWeight: 500 }}>Credit to</p>
-              <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
-                {accounts.map(a => (
-                  <div key={a.id} onClick={() => setAddIncAcct(a.id)} style={{ padding: "6px 12px", borderRadius: 10, cursor: "pointer", border: addIncAcct === a.id ? `2px solid ${C.g1}` : "1px solid rgba(0,0,0,0.06)", background: addIncAcct === a.id ? C.gp : "transparent" }}>
-                    <span style={{ fontFamily: F, fontSize: 11, color: addIncAcct === a.id ? C.g1 : C.t3, fontWeight: 500 }}>{a.name}</span>
+              <p style={{ fontFamily: F, fontSize: 12, color: C.t3, marginBottom: 8, fontWeight: 500 }}>Category</p>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+                {incomeCats.map(c => (
+                  <div key={c.id} onClick={() => setAddIncAcct(c.id)} style={{ padding: "5px 10px", borderRadius: 10, cursor: "pointer", border: addIncAcct === c.id ? `2px solid ${C.g1}` : "1px solid rgba(0,0,0,0.06)", background: addIncAcct === c.id ? C.gp : "transparent" }}>
+                    <span style={{ fontFamily: F, fontSize: 11, color: addIncAcct === c.id ? C.g1 : C.t3, fontWeight: 500 }}>{c.label}</span>
                   </div>
                 ))}
               </div>
               <p style={{ fontFamily: F, fontSize: 12, color: C.t3, marginBottom: 8, fontWeight: 500 }}>Route to</p>
-              <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+              <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
                 {[{ id: "daily", label: "Daily Budget", icon: "calendar_today" }, { id: "savpot", label: "SavPot", icon: "savings" }].map(t => (
                   <div key={t.id} onClick={() => setAddIncTarget(t.id)} style={{ flex: 1, padding: "12px 8px", borderRadius: 14, textAlign: "center", cursor: "pointer", border: addIncTarget === t.id ? `2px solid ${C.g1}` : "1px solid rgba(0,0,0,0.06)", background: addIncTarget === t.id ? C.gp : "rgba(255,255,255,0.4)" }}>
                     <Ic n={t.icon} s={20} c={addIncTarget === t.id ? C.g1 : C.t3} f={addIncTarget === t.id} st={{ display: "block", margin: "0 auto 4px" }} />
@@ -2183,22 +2260,58 @@ const ProfileScreen = ({ config, onLogout, onEditSetup }) => {
                 ))}
               </div>
               <div style={{ display: "flex", gap: 8 }}>
-                <Btn onClick={() => { setShowAddIncome(false); setAddIncAmt(""); }}>Add Income</Btn>
-                <Btn sec onClick={() => setShowAddIncome(false)} style={{ flex: 0, width: 80 }}>Cancel</Btn>
+                <Btn onClick={handleAddIncome}>Confirm</Btn>
+                <Btn sec onClick={() => { setShowAddIncome(false); setAddIncAmt(""); }} style={{ flex: 0, width: 80 }}>Cancel</Btn>
               </div>
             </div>
-          ) : (
-            <div style={{ textAlign: "center", padding: "4px 0" }}>
-              <p style={{ fontFamily: F, fontSize: 13, color: C.t3, marginBottom: 12 }}>Got bonus, freelance pay, or extra cash?</p>
-              <Btn onClick={() => setShowAddIncome(true)}>Add Income</Btn>
-            </div>
           )}
-        </Accordion>
+        </Glass>
 
         {/* Income Categories */}
         <Accordion icon="category" title="Income Categories" accent={C.g1}>
           <ListManager items={incomeCats} setItems={saveIncomeCats} accent={C.g1} nameLabel="Category name" />
         </Accordion>
+
+        {/* ══════════════════════════════════════ */}
+        {/* ── EXPENSE GROUP ── */}
+        {/* ══════════════════════════════════════ */}
+        <GroupLabel label="Expense" color={C.red} />
+
+        {/* Expense Summary */}
+        <Glass style={{ marginBottom: 10, padding: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ width: 32, height: 32, borderRadius: 10, background: `${C.red}12`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <Ic n="arrow_upward" s={16} c={C.red} f />
+              </div>
+              <span style={{ fontFamily: F, fontSize: 14, color: C.tx, fontWeight: 600 }}>Fixed Expenses</span>
+            </div>
+            <span style={{ fontFamily: F, fontSize: 18, color: C.red, fontWeight: 700 }}>₹{(config?.mandatory || 0).toLocaleString("en-IN")}</span>
+          </div>
+          {(() => {
+            const allocated = editExpItems.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+            const unallocated = (config?.mandatory || 0) - allocated;
+            return editExpItems.length > 0 ? (
+              <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+                <div style={{ flex: 1, padding: "8px 12px", borderRadius: 10, background: `${C.g1}08` }}>
+                  <p style={{ fontFamily: F, fontSize: 10, color: C.t3, fontWeight: 500 }}>Allocated</p>
+                  <p style={{ fontFamily: F, fontSize: 14, color: C.g1, fontWeight: 700 }}>₹{allocated.toLocaleString("en-IN")}</p>
+                </div>
+                <div style={{ flex: 1, padding: "8px 12px", borderRadius: 10, background: unallocated > 0 ? `${C.au}08` : `${C.g1}08` }}>
+                  <p style={{ fontFamily: F, fontSize: 10, color: C.t3, fontWeight: 500 }}>Unallocated</p>
+                  <p style={{ fontFamily: F, fontSize: 14, color: unallocated > 0 ? C.au : C.g1, fontWeight: 700 }}>₹{Math.max(0, unallocated).toLocaleString("en-IN")}</p>
+                </div>
+              </div>
+            ) : null;
+          })()}
+          <CatEditor
+            cats={EXPENSE_CATS}
+            items={editExpItems}
+            setItems={items => { setEditExpItems(items); setExpItemsDirty(true); }}
+            accent={C.red}
+          />
+          {expItemsDirty && <Btn onClick={handleSaveExpItems} style={{ marginTop: 4, background: "linear-gradient(135deg,#E53E3E,#C53030)" }}>{savingExp ? "Saving…" : "Save Changes"}</Btn>}
+        </Glass>
 
         {/* Expense Categories */}
         <Accordion icon="category" title="Expense Categories" accent={C.au}>
@@ -2207,75 +2320,61 @@ const ProfileScreen = ({ config, onLogout, onEditSetup }) => {
 
         {/* Expense Vendors */}
         <Accordion icon="storefront" title="Manage Vendors" accent={C.au}>
-          <p style={{ fontFamily: F, fontSize: 12, color: C.t3, marginBottom: 12 }}>Quick-select vendors when adding expenses</p>
-          <ListManager items={vendors} setItems={saveVendorsFn} accent={C.au} nameLabel="Vendor name" />
-        </Accordion>
-
-        {/* Liabilities */}
-        <Accordion icon="balance" title="Manage Liabilities" accent={C.red}>
-          {liabilities.length > 0 && (
-            <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-              <div style={{ flex: 1, padding: "10px 14px", borderRadius: 12, background: `${C.red}08` }}>
-                <p style={{ fontFamily: F, fontSize: 10, color: C.t3, fontWeight: 500 }}>Total Debt</p>
-                <p style={{ fontFamily: F, fontSize: 18, color: C.red, fontWeight: 700 }}>₹{totalDebt.toLocaleString("en-IN")}</p>
-              </div>
-              <div style={{ flex: 1, padding: "10px 14px", borderRadius: 12, background: `${C.au}08` }}>
-                <p style={{ fontFamily: F, fontSize: 10, color: C.t3, fontWeight: 500 }}>Monthly EMI</p>
-                <p style={{ fontFamily: F, fontSize: 18, color: C.au, fontWeight: 700 }}>₹{totalEmi.toLocaleString("en-IN")}</p>
-              </div>
-            </div>
-          )}
-          {liabilities.map(l => {
-            const at = ACCT_TYPES.find(t => t.id === l.type) || ACCT_TYPES[1];
+          {vendors.map((v, idx) => {
+            const cat = EXPENSE_CATEGORIES.find(c => c.id === v.categoryId);
             return (
-              <div key={l.id} style={{ padding: 14, borderRadius: 14, background: `${C.red}04`, border: `1px solid ${C.red}10`, marginBottom: 8 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                  <div>
-                    <p style={{ fontFamily: F, fontSize: 14, color: C.tx, fontWeight: 600 }}>{l.name}</p>
-                    <p style={{ fontFamily: F, fontSize: 11, color: C.t3 }}>{l.lender} · {at.label}</p>
-                  </div>
-                  <button onClick={() => handleRemoveLiability(l.id)} style={{ background: "none", border: "none", cursor: "pointer" }}><Ic n="close" s={16} c={C.t3} /></button>
+              <div key={v.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 0", borderBottom: "1px solid rgba(0,0,0,0.04)" }}>
+                <div style={{ width: 32, height: 32, borderRadius: 10, background: `${C.au}12`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                  <Ic n={v.icon || "storefront"} s={16} c={C.au} f />
                 </div>
-                <div style={{ display: "flex", gap: 12, marginTop: 10 }}>
-                  <div><p style={{ fontFamily: F, fontSize: 10, color: C.t3 }}>Outstanding</p><p style={{ fontFamily: F, fontSize: 14, color: C.red, fontWeight: 700 }}>₹{(Number(l.outstanding) || 0).toLocaleString("en-IN")}</p></div>
-                  <div><p style={{ fontFamily: F, fontSize: 10, color: C.t3 }}>EMI</p><p style={{ fontFamily: F, fontSize: 14, color: C.au, fontWeight: 700 }}>₹{(Number(l.emi) || 0).toLocaleString("en-IN")}</p></div>
-                  <div><p style={{ fontFamily: F, fontSize: 10, color: C.t3 }}>Fixed Exp</p><p style={{ fontFamily: F, fontSize: 14, color: l.inFixed ? C.g1 : C.t3, fontWeight: 600 }}>{l.inFixed ? "Yes" : "No"}</p></div>
-                </div>
+                <span style={{ fontFamily: F, fontSize: 13, color: C.tx, fontWeight: 600, flex: 1 }}>{v.label}</span>
+                {cat && (
+                  <span style={{ padding: "3px 8px", borderRadius: 8, fontFamily: F, fontSize: 10, fontWeight: 600, background: `${cat.color}15`, color: cat.color, flexShrink: 0 }}>{cat.label}</span>
+                )}
+                <button onClick={() => saveVendorsFn(vendors.filter((_, i) => i !== idx))} style={{ background: "none", border: "none", cursor: "pointer", padding: 2, flexShrink: 0 }}><Ic n="close" s={15} c={C.t3} /></button>
               </div>
             );
           })}
-          {showAddLiab ? (
-            <div style={{ marginTop: 8, padding: 14, borderRadius: 14, background: "rgba(255,255,255,0.4)", border: "1px solid rgba(0,0,0,0.06)", animation: "fadeUp 0.2s ease-out" }}>
-              <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
-                {ACCT_TYPES.filter(a => a.id !== "cash" && a.id !== "wallet").map(at => (
-                  <div key={at.id} onClick={() => setNewLiab({...newLiab, type: at.id})} style={{ padding: "6px 12px", borderRadius: 10, cursor: "pointer", border: newLiab.type === at.id ? `2px solid ${C.red}` : "1px solid rgba(0,0,0,0.06)", background: newLiab.type === at.id ? `${C.red}08` : "transparent" }}>
-                    <span style={{ fontFamily: F, fontSize: 11, color: newLiab.type === at.id ? C.red : C.t3, fontWeight: 500 }}>{at.label}</span>
+          {addingVendor ? (
+            <div style={{ marginTop: 4, padding: 14, borderRadius: 14, background: "rgba(255,255,255,0.5)", border: "1px solid rgba(0,0,0,0.06)", animation: "fadeUp 0.2s ease-out" }}>
+              <input value={newVendorName} onChange={e => setNewVendorName(e.target.value)} placeholder="Vendor name" autoFocus style={{ width: "100%", padding: "10px 14px", borderRadius: 12, border: "1px solid rgba(0,0,0,0.08)", background: "rgba(255,255,255,0.6)", fontFamily: F, fontSize: 13, color: C.tx, outline: "none", boxSizing: "border-box", marginBottom: 10 }} />
+              <p style={{ fontFamily: F, fontSize: 11, color: C.t3, marginBottom: 8, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" }}>Expense Category</p>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+                {EXPENSE_CATEGORIES.map(c => (
+                  <div key={c.id} onClick={() => setNewVendorCat(newVendorCat === c.id ? null : c.id)} style={{ padding: "4px 10px", borderRadius: 8, cursor: "pointer", fontFamily: F, fontSize: 11, fontWeight: 500, border: newVendorCat === c.id ? `2px solid ${c.color}` : "1px solid rgba(0,0,0,0.07)", background: newVendorCat === c.id ? `${c.color}12` : "transparent", color: newVendorCat === c.id ? c.color : C.t3 }}>
+                    {c.label}
                   </div>
                 ))}
               </div>
-              <Inp label="Loan Name" value={newLiab.name} onChange={v => setNewLiab({...newLiab, name: v})} placeholder="Personal Loan" />
-              <Inp label="Lender" value={newLiab.lender} onChange={v => setNewLiab({...newLiab, lender: v})} placeholder="ICICI Bank" />
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                <Inp label="Outstanding" value={newLiab.outstanding} onChange={v => setNewLiab({...newLiab, outstanding: v})} prefix="₹" type="number" placeholder="1500000" />
-                <Inp label="Monthly EMI" value={newLiab.emi} onChange={v => setNewLiab({...newLiab, emi: v})} prefix="₹" type="number" placeholder="45000" />
-              </div>
-              <div onClick={() => setNewLiab({...newLiab, inFixed: !newLiab.inFixed})} style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", borderRadius: 12, cursor: "pointer", marginBottom: 14, border: newLiab.inFixed ? `2px solid ${C.g1}` : "1px solid rgba(0,0,0,0.06)", background: newLiab.inFixed ? `${C.g1}08` : "transparent" }}>
-                <div style={{ width: 20, height: 20, borderRadius: 6, border: newLiab.inFixed ? `2px solid ${C.g1}` : "2px solid rgba(0,0,0,0.15)", background: newLiab.inFixed ? C.g1 : "transparent", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  {newLiab.inFixed && <Ic n="check" s={12} c="#fff" />}
-                </div>
-                <span style={{ fontFamily: F, fontSize: 12, color: newLiab.inFixed ? C.g1 : C.t3, fontWeight: 500 }}>Include EMI in fixed expenses</span>
-              </div>
               <div style={{ display: "flex", gap: 8 }}>
-                <Btn onClick={handleAddLiability} style={{ flex: 1, background: "linear-gradient(135deg, #E53E3E, #C53030)" }}>Add Liability</Btn>
-                <Btn sec onClick={() => setShowAddLiab(false)} style={{ flex: 0, width: 80 }}>Cancel</Btn>
+                <button onClick={() => { if (newVendorName.trim()) saveVendorsFn([...vendors, { id: Date.now().toString(), label: newVendorName.trim(), icon: "storefront", categoryId: newVendorCat || null }]); setNewVendorName(""); setNewVendorCat(null); setAddingVendor(false); }} style={{ flex: 1, padding: "10px", borderRadius: 12, background: C.au, border: "none", fontFamily: F, fontSize: 13, fontWeight: 600, color: "#fff", cursor: "pointer" }}>Add Vendor</button>
+                <button onClick={() => { setAddingVendor(false); setNewVendorName(""); setNewVendorCat(null); }} style={{ width: 80, padding: "10px", borderRadius: 12, background: "rgba(0,0,0,0.04)", border: "none", fontFamily: F, fontSize: 13, color: C.t3, cursor: "pointer" }}>Cancel</button>
               </div>
             </div>
           ) : (
-            <button onClick={() => setShowAddLiab(true)} style={{ width: "100%", marginTop: 4, padding: "10px", borderRadius: 12, border: `1.5px dashed ${C.red}40`, background: `${C.red}06`, fontFamily: F, fontSize: 12, fontWeight: 600, color: C.red, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-              <Ic n="add" s={16} c={C.red} /> Add Liability
+            <button onClick={() => setAddingVendor(true)} style={{ width: "100%", marginTop: 4, padding: "10px", borderRadius: 12, border: `1.5px dashed ${C.au}40`, background: `${C.au}06`, fontFamily: F, fontSize: 12, fontWeight: 600, color: C.au, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+              <Ic n="add" s={16} c={C.au} /> Add Vendor
             </button>
           )}
         </Accordion>
+
+        {/* ══════════════════════════════════════ */}
+        {/* ── DEBT GROUP ── */}
+        {/* ══════════════════════════════════════ */}
+        <GroupLabel label="Debt" color={C.red} />
+
+        <Glass style={{ marginBottom: 10, padding: 20, display: "flex", alignItems: "center", gap: 14 }}>
+          <div style={{ width: 42, height: 42, borderRadius: 14, background: `${C.red}10`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <Ic n="balance" s={20} c={C.red} f />
+          </div>
+          <div style={{ flex: 1 }}>
+            <p style={{ fontFamily: F, fontSize: 14, color: C.tx, fontWeight: 600 }}>Manage Liabilities</p>
+            <p style={{ fontFamily: F, fontSize: 12, color: C.t3, marginTop: 2 }}>Coming soon</p>
+          </div>
+          <div style={{ padding: "4px 10px", borderRadius: 8, background: `${C.au}15` }}>
+            <span style={{ fontFamily: F, fontSize: 10, fontWeight: 700, color: C.au, textTransform: "uppercase", letterSpacing: "0.5px" }}>Soon</span>
+          </div>
+        </Glass>
 
         {/* ── LOGOUT ── */}
         <Btn sec onClick={onLogout} style={{ color: C.red, borderColor: `${C.red}20`, marginTop: 10, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
@@ -3329,6 +3428,7 @@ export default function SavPotApp() {
   // Never interrupt the splash screen — wait for it to call onDone
   useEffect(() => {
     if (screen === "splash") return;
+    if (screen === "setup") return;
     if (loading) return;
     if (!user) { setScreen("signup"); return; }
     if (!config) { setScreen("setup"); return; }
