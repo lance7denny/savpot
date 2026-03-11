@@ -241,29 +241,45 @@ export const deleteLiability = async (uid, liabilityId) => {
 // ═══════════════════════════════════
 // MIDNIGHT TRANSFER (run via Cloud Function or client-triggered)
 // ═══════════════════════════════════
-export const runMidnightTransfer = async (uid) => {
-  const config = await getSetupConfig(uid);
-  if (!config) return;
 
-  const todayExpenses = await getTodayExpenses(uid);
-  const spent = todayExpenses.reduce((s, e) => s + (e.amount || 0), 0);
-  const daily = config.daily || 0;
+const toDateKey = (d) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+export const getExpensesByDate = async (uid, date) => {
+  const start = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const end = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59);
+  const q = query(
+    expensesCol(uid),
+    where("dateTime", ">=", Timestamp.fromDate(start)),
+    where("dateTime", "<=", Timestamp.fromDate(end)),
+    orderBy("dateTime", "desc")
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+};
+
+export const runTransferForDate = async (uid, date, config) => {
+  const cfg = config || (await getSetupConfig(uid));
+  if (!cfg) return;
+
+  const dateKey = toDateKey(date);
+  const expenses = await getExpensesByDate(uid, date);
+  const spent = expenses.reduce((s, e) => s + (e.amount || 0), 0);
+  const daily = cfg.daily || 0;
   const leftover = Math.max(0, daily - spent);
 
   if (leftover > 0) {
-    // Add to SavPot
     const state = await getSavPotState(uid);
     await updateSavPotState(uid, { balance: (state.balance || 0) + leftover });
     await addSavPotEntry(uid, {
       type: "ADD_LEFTOVER",
       amount: leftover,
-      reason: "Daily leftover auto-transfer",
+      reason: `Daily leftover (${dateKey})`,
+      date: dateKey,
+      dateTime: Timestamp.fromDate(new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 0)),
     });
   }
 
-  // Save daily snapshot
-  const now = new Date();
-  const dateKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
   await saveDailySnapshot(uid, {
     date: dateKey,
     dailyBudget: daily,
@@ -273,4 +289,29 @@ export const runMidnightTransfer = async (uid) => {
   });
 
   return { spent, leftover };
+};
+
+// Called on app load — backfills any days where snapshot is missing
+export const checkAndRunMissedTransfers = async (uid) => {
+  const config = await getSetupConfig(uid);
+  if (!config) return;
+
+  const setupDate = config.updatedAt?.toDate?.() || new Date(0);
+  const today = new Date();
+
+  for (let i = 1; i <= 7; i++) {
+    const d = new Date(today);
+    d.setDate(today.getDate() - i);
+    if (d < setupDate) break;
+
+    const dateKey = toDateKey(d);
+    const snap = await getDoc(doc(db, "users", uid, "dailySnapshots", dateKey));
+    if (!snap.exists()) {
+      await runTransferForDate(uid, d, config);
+    }
+  }
+};
+
+export const runMidnightTransfer = async (uid) => {
+  return runTransferForDate(uid, new Date());
 };

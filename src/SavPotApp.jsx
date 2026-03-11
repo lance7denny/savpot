@@ -9,6 +9,7 @@ import {
   getDailySnapshots,
   getCategories, saveCategories, getVendors, saveVendors,
   getLiabilities, addLiability, deleteLiability,
+  checkAndRunMissedTransfers,
 } from "./firebase/database";
 
 // ─── DESIGN TOKENS ───
@@ -701,25 +702,35 @@ const SignupScreen = ({ onDone }) => {
 // ═══════════════════════════════════
 // ─── SETUP WIZARD (4 PAGES) ───
 // ═══════════════════════════════════
-const SetupWizard = ({ onDone }) => {
+const SetupWizard = ({ onDone, initialConfig = null }) => {
   const [pg, setPg] = useState(0);
   const [saving, setSaving] = useState(false);
 
   // Page 1 - Income
-  const [incItems, setIncItems] = useState([
-    { catId: "salary", label: "Salary", icon: "work", amount: "" },
-  ]);
+  const [incItems, setIncItems] = useState(
+    initialConfig?.incomeItems?.length > 0
+      ? initialConfig.incomeItems
+      : [{ catId: "salary", label: "Salary", icon: "work", amount: "" }]
+  );
 
   // Page 2 - Fixed Expenses
-  const [expMode, setExpMode] = useState("cats");
-  const [expItems, setExpItems] = useState([]);
-  const [expTotal, setExpTotal] = useState("");
+  const [expMode, setExpMode] = useState(
+    initialConfig?.expenseItems?.length > 0 ? "cats" : initialConfig?.mandatory ? "total" : "cats"
+  );
+  const [expItems, setExpItems] = useState(initialConfig?.expenseItems || []);
+  const [expTotal, setExpTotal] = useState(
+    initialConfig?.mandatory && !initialConfig?.expenseItems?.length ? String(initialConfig.mandatory) : ""
+  );
 
   // Page 3 - Investments
-  const [invMode, setInvMode] = useState("cats");
-  const [invItems, setInvItems] = useState([]);
-  const [invTotal, setInvTotal] = useState("");
-  const [noInvest, setNoInvest] = useState(false);
+  const [invMode, setInvMode] = useState(
+    initialConfig?.investItems?.length > 0 ? "cats" : initialConfig?.investments ? "total" : "cats"
+  );
+  const [invItems, setInvItems] = useState(initialConfig?.investItems || []);
+  const [invTotal, setInvTotal] = useState(
+    initialConfig?.investments && !initialConfig?.investItems?.length ? String(initialConfig.investments) : ""
+  );
+  const [noInvest, setNoInvest] = useState(initialConfig ? (initialConfig.investments || 0) === 0 : false);
 
   // Page 4 - Daily Budget
   const [customDaily, setCustomDaily] = useState("");
@@ -1786,7 +1797,7 @@ const ACCT_TYPES = [
   { id: "wallet", label: "Wallet", icon: "account_balance_wallet" },
 ];
 
-const ProfileScreen = ({ config, onLogout }) => {
+const ProfileScreen = ({ config, onLogout, onEditSetup }) => {
   const { user, profile, refreshProfile } = useAuth();
 
   // Edit mode
@@ -2093,6 +2104,12 @@ const ProfileScreen = ({ config, onLogout }) => {
               <span style={{ fontFamily: F, fontSize: 15, color: r.clr, fontWeight: 700 }}>₹{(r.val || 0).toLocaleString("en-IN")}</span>
             </div>
           ))}
+          <button
+            onClick={onEditSetup}
+            style={{ width: "100%", marginTop: 12, padding: "10px", borderRadius: 12, border: `1.5px dashed ${C.g1}50`, background: `${C.g1}06`, fontFamily: F, fontSize: 12, fontWeight: 600, color: C.g1, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}
+          >
+            <Ic n="edit" s={14} c={C.g1} /> Edit Setup
+          </button>
         </Section>
 
         {/* ── ACCORDION SECTIONS ── */}
@@ -3306,6 +3323,7 @@ export default function SavPotApp() {
   const splashSeen = localStorage.getItem("splashSeen");
   const [screen, setScreen] = useState(splashSeen ? "loading" : "splash");
   const [tab, setTab] = useState("home");
+  const [isEditSetup, setIsEditSetup] = useState(false);
 
   // Drive screen navigation from Firebase auth state
   // Never interrupt the splash screen — wait for it to call onDone
@@ -3316,6 +3334,13 @@ export default function SavPotApp() {
     if (!config) { setScreen("setup"); return; }
     setScreen("app");
   }, [user, config, loading, screen]);
+
+  // Backfill any missed nightly transfers when user reaches the app
+  useEffect(() => {
+    if (screen === "app" && user) {
+      checkAndRunMissedTransfers(user.uid).catch(() => {});
+    }
+  }, [screen, user]);
 
   const handleSplashDone = () => {
     localStorage.setItem("splashSeen", "1");
@@ -3331,6 +3356,33 @@ export default function SavPotApp() {
     // useEffect above routes to "signup" once user becomes null
   };
 
+  const handleEditSetup = () => {
+    setIsEditSetup(true);
+    setScreen("setup");
+  };
+
+  const handleSetupDone = async (cfg) => {
+    await saveSetupConfig(user.uid, cfg);
+    // Credit any excess from custom daily budget directly to SavPot
+    if (cfg.savpotDirect > 0) {
+      const state = await getSavPotState(user.uid);
+      await updateSavPotState(user.uid, { balance: (state.balance || 0) + cfg.savpotDirect });
+      await addSavPotEntry(user.uid, {
+        type: "SETUP_DIRECT",
+        amount: cfg.savpotDirect,
+        reason: "Setup: excess monthly budget moved to SavPot",
+      });
+    }
+    await refreshConfig();
+    if (isEditSetup) {
+      setIsEditSetup(false);
+      setScreen("app");
+      setTab("profile");
+    } else {
+      setScreen("done");
+    }
+  };
+
   return (
     <div style={{ maxWidth: 430, margin: "0 auto" }}>
       <FontLoader />
@@ -3340,11 +3392,8 @@ export default function SavPotApp() {
       {screen === "signup" && <SignupScreen onDone={() => {}} />}
       {screen === "setup" && (
         <SetupWizard
-          onDone={async (cfg) => {
-            await saveSetupConfig(user.uid, cfg);
-            await refreshConfig();
-            setScreen("done");
-          }}
+          initialConfig={isEditSetup ? config : null}
+          onDone={handleSetupDone}
         />
       )}
       {screen === "done" && (
@@ -3358,7 +3407,7 @@ export default function SavPotApp() {
           {tab === "home"    && <HomeScreen config={config} onNav={setTab} />}
           {tab === "savpot"  && <SavPotScreen config={config} />}
           {tab === "reports" && <ReportsScreen config={config} />}
-          {tab === "profile" && <ProfileScreen config={config} onLogout={handleLogout} />}
+          {tab === "profile" && <ProfileScreen config={config} onLogout={handleLogout} onEditSetup={handleEditSetup} />}
           <BottomNav active={tab} onNav={setTab} />
         </>
       )}
