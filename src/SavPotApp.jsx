@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "./hooks/useAuth";
-import { signUp, signIn, signInWithGoogle, logOut, changePassword } from "./firebase/auth";
+import { signUp, signIn, signInWithGoogle, logOut, changePassword } from "./lib/firebase/auth";
 import {
   saveSetupConfig, updateUserProfile,
   getAccounts, addAccount, updateAccount, deleteAccount,
@@ -10,7 +10,7 @@ import {
   getCategories, saveCategories, getVendors, saveVendors,
   getLiabilities, addLiability, deleteLiability,
   checkAndRunMissedTransfers,
-} from "./firebase/database";
+} from "./lib/firebase/database";
 
 // ─── DESIGN TOKENS ───
 const F = "'Poppins', sans-serif";
